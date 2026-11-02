@@ -66,7 +66,7 @@ export function ChatPane({
       </div>
 
       <div className="shrink-0">
-        {stopLabel && !streaming ? (
+        {stopLabel && !streaming && !awaiting ? (
           <p className="mx-auto w-full max-w-3xl px-3 text-[11.5px] text-ink-3 sm:px-6">
             Stopped: {stopLabel}
           </p>

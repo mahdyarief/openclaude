@@ -308,8 +308,11 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
       // the draft must show in the transcript immediately.
       const store = storeRef.current
       if (store) {
+        // Clear the previous turn's stop label; otherwise "Stopped: Finished"
+        // stays visible under the thinking indicator of the new turn.
         store.setState(state => ({
           ...state,
+          stopReason: null,
           messages: [
             ...state.messages,
             { id: `optimistic-${Date.now()}`, role: 'user', parts: [{ kind: 'text', text }] },
