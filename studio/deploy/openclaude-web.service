@@ -1,0 +1,35 @@
+[Unit]
+Description=OpenClaude ACP Web UI (browser chat over ACP)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# %h expands to this user's home; no absolute paths or accounts hardcoded.
+WorkingDirectory=%h/code/openclaude
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=HOME=%h
+# Port and working directory are configurable via these env vars.
+Environment=ACP_WEB_PORT=5178
+Environment=ACP_WEB_CWD=%h
+ExecStart=/usr/bin/node %h/code/openclaude/dist/acp-web.mjs --port ${ACP_WEB_PORT} --cwd ${ACP_WEB_CWD}
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+KillMode=mixed
+
+MemoryHigh=3G
+MemoryMax=4G
+LimitNOFILE=65536
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=no
+PrivateTmp=yes
+UMask=0077
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=openclaude-web
+
+[Install]
+WantedBy=default.target
