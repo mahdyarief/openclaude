@@ -1,4 +1,15 @@
-# Deploying the bridge on aspire
+# Deploying Studio on aspire
+
+Two units, both **systemd user units** (no `sudo`, no absolute paths, no account
+names — `%h` expands to the home of whoever owns the unit):
+
+| Unit | Port | Role |
+|---|---|---|
+| `openclaude-studio.service` | 8787 | bridge (HTTP + WS, spawns the ACP agent) |
+| `openclaude-studio-web.service` | 8768 | static server for the Studio UI |
+
+The legacy `openclaude-web.service` (`acp-web.mjs` on 5178) was removed: Studio
+replaces it.
 
 1. Create the environment file:
 
@@ -9,12 +20,16 @@
    chmod 600 ~/.config/openclaude-studio/bridge.env
    ```
 
-2. Install dependencies and build the bridge:
+   Add `OPENCLAUDE_BRIDGE_HOST=<bind address>` to that file to pick the bind
+   address (defaults to loopback). Do not bind to `0.0.0.0`.
+
+2. Install dependencies and build:
 
    ```bash
-   cd /home/dy/code/openclaude/studio
+   cd ~/code/openclaude/studio
    pnpm install
    pnpm --filter @openclaude-studio/bridge build
+   pnpm --filter @openclaude-studio/web build
    ```
 
    The bridge resolves `@rayss-dev/openclaude` through a workspace
@@ -22,18 +37,21 @@
    `@rayss-dev/openclaude` install is needed. Rebuild after any change under
    `packages/bridge/src` and restart the unit.
 
-3. Install and start the unit:
+3. Install and start both units (user scope):
 
    ```bash
-   sudo cp deploy/openclaude-studio.service /etc/systemd/system/
-   sudo systemctl daemon-reload
-   sudo systemctl enable --now openclaude-studio
+   install -Dm644 deploy/openclaude-studio.service deploy/openclaude-studio-web.service \
+     -t ~/.config/systemd/user/
+   systemctl --user daemon-reload
+   systemctl --user enable --now openclaude-studio.service openclaude-studio-web.service
+   # keep them running without an active login
+   loginctl enable-linger "$USER"
    ```
 
 4. Read the token once for the browser URL:
 
    ```bash
-   sudo cat ~/.config/openclaude-studio/bridge.env
+   cat ~/.config/openclaude-studio/bridge.env
    ```
 
 5. Open the web app over Tailscale with
@@ -98,23 +116,13 @@ GET http://<bridge-host>:8787/fs?path=<relative>&token=<token>
 ## Web UI static server
 
 The built SPA in `apps/web/dist` is served by `deploy/web/serve.mjs` — a tiny
-static file server (no auth of its own). Serve it as a second systemd unit so it
-survives reboots instead of a manually launched `/tmp/serve.mjs`.
+static file server (no auth of its own). It runs as the second unit
+(`openclaude-studio-web.service`, installed in step 3 above) and is `PartOf` the
+bridge unit, so restarting the bridge also restarts the web server.
 
-Install and start:
-
-```bash
-sudo cp deploy/openclaude-studio-web.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now openclaude-studio-web
-```
-
-Optional host/port overrides go in `/home/dy/.config/openclaude-studio/web.env`
+Optional host/port overrides go in `~/.config/openclaude-studio/web.env`
 (`WEB_HOST`, `WEB_PORT`). The server binds `127.0.0.1:8768` by default and has no
-authentication, so bind it to the Tailscale address (e.g. `WEB_HOST=100.84.56.62`)
-rather than `0.0.0.0`. It runs as a `PartOf` the bridge unit, so restarting the
-bridge also restarts the web server, and the web server is stopped when the
-bridge stops.
+authentication, so bind it to the Tailscale address rather than `0.0.0.0`.
 
 Rebuild the web app (`pnpm --filter @openclaude-studio/web build`) after changing
-`apps/web` or `packages/ui`, then `sudo systemctl restart openclaude-studio-web`.
+`apps/web` or `packages/ui`, then `systemctl --user restart openclaude-studio-web`.
