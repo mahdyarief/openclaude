@@ -10,7 +10,7 @@ User=dy
 WorkingDirectory=%h/code/openclaude/studio
 # Optional: WEB_HOST / WEB_PORT overrides. The server has no auth of its own,
 # so bind it to the Tailscale address (or keep loopback) rather than 0.0.0.0.
-EnvironmentFile=-%h/.config/openclaude-studio/web.env
+EnvironmentFile=-/home/dy/.config/openclaude-studio/web.env
 ExecStart=/usr/bin/node deploy/web/serve.mjs
 Restart=on-failure
 RestartSec=2
