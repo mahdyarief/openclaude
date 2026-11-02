@@ -1,5 +1,6 @@
 import type { ConversationMessage, ToolCall } from '@openclaude-studio/acp'
 import ThinkingState from '../beautifui/ThinkingState.js'
+import ReactMarkdown from 'react-markdown'
 import { cn } from '../lib/cn.js'
 
 export type MessageBubbleProps = {
@@ -49,12 +50,15 @@ export function MessageBubble({
 
       {message.parts.map((part, index) => {
         if (part.kind === 'text') {
+          // Agent answers are Markdown (headings, lists, code fences, links).
+          // `.openclaude-prose` styles them from design tokens, matching the
+          // document viewer so chat and file previews read the same.
           return (
-            <p
+            <div
               key={index}
-              className="whitespace-pre-wrap text-[13.5px] leading-[1.55] text-ink"
+              className="openclaude-prose text-[13.5px] leading-[1.55] text-ink"
             >
-              {part.text}
+              <ReactMarkdown>{part.text}</ReactMarkdown>
               {showCaret && index === message.parts.length - 1 ? (
                 <span
                   aria-hidden
@@ -62,7 +66,7 @@ export function MessageBubble({
                   style={{ animation: 'caret-blink 1s steps(2, start) infinite' }}
                 />
               ) : null}
-            </p>
+            </div>
           )
         }
 

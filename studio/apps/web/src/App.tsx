@@ -52,6 +52,8 @@ export function App() {
         project={ui.active}
         projects={ui.projects}
         openSessions={ui.openSessions}
+        permissionMode={ui.permissionMode}
+        onPermissionModeChange={ui.setPermissionMode}
         onOpenSessionsChange={ui.setOpenSessions}
         onAddProject={() => setPicking(true)}
         onSwitchProject={ui.switchProject}

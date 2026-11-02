@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "ws": "^8.18.0",
+    "@openclaude-studio/acp": "workspace:*",
     "@rayss-dev/openclaude": "link:../../..",
     "@agentclientprotocol/sdk": "2.2.0",
     "@anthropic-ai/sdk": "^0.94.0",

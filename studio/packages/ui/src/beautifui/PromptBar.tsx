@@ -2,6 +2,12 @@
 
 import { useEffect, useRef } from "react";
 import { cn } from "../lib/cn.js";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "../shadcn/dropdown-menu.js";
 
 /* ─────────────────────────────────────────────────────────
  * PROMPT BAR
@@ -14,6 +20,14 @@ import { cn } from "../lib/cn.js";
 
 export type PromptTab = {
   /** stable id used for the aria-pressed check */
+  id: string;
+  /** visible label */
+  label: string;
+};
+
+/** one entry in the permission-mode selector */
+export type PromptBarModeOption = {
+  /** stable id (the permission mode value) */
   id: string;
   /** visible label */
   label: string;
@@ -56,6 +70,12 @@ export type PromptBarProps = {
   onTabChange?: (id: string) => void;
   /** fired when the attach-file icon is clicked */
   onAttach?: () => void;
+  /** agent permission mode; rendered as a selector in the action row */
+  modes?: PromptBarModeOption[];
+  /** the currently selected mode id */
+  mode?: string;
+  /** fired when the user picks a different permission mode */
+  onModeChange?: (mode: string) => void;
   labels?: Partial<PromptBarLabels>;
   className?: string;
 };
@@ -71,12 +91,16 @@ export default function PromptBar({
   activeTab,
   onTabChange,
   onAttach,
+  modes,
+  mode,
+  onModeChange,
   labels,
   className,
 }: PromptBarProps) {
   const l = { ...DEFAULT_LABELS, ...labels };
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const canSend = value.trim().length > 0 && !disabled && !streaming;
+  const activeMode = modes?.find(option => option.id === mode) ?? modes?.[0];
 
   // Auto-grow the textarea up to ~6 lines, then scroll. `scrollHeight` is the
   // only reliable measure for a textarea that starts at one row.
@@ -161,6 +185,39 @@ export default function PromptBar({
                 <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
               </svg>
             </button>
+            {modes && modes.length > 0 && activeMode ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  aria-label="Permission mode"
+                  className="inline-flex h-7 items-center gap-1 rounded-[6px] px-1.5 text-[11.5px] text-ink-2 transition-colors duration-100 hover:bg-hover hover:text-ink data-[state=open]:bg-hover"
+                >
+                  <span aria-hidden className="size-1.5 rounded-full bg-orange" />
+                  {activeMode.label}
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <path d="m6 9 6 6 6-6" />
+                  </svg>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="min-w-[11rem]">
+                  {modes.map(option => (
+                    <DropdownMenuItem
+                      key={option.id}
+                      onSelect={() => onModeChange?.(option.id)}
+                      className={cn(
+                        "justify-between",
+                        option.id === activeMode.id && "font-medium",
+                      )}
+                    >
+                      {option.label}
+                      {option.id === activeMode.id ? (
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                          <path d="M20 6 9 17l-5-5" />
+                        </svg>
+                      ) : null}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : null}
           </div>
           {streaming ? (
             <button

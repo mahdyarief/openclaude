@@ -1,6 +1,11 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import {
+  DEFAULT_PERMISSION_MODE,
+  isPermissionMode,
+  type PermissionMode,
+} from '@openclaude-studio/acp'
 
 /**
  * Server-backed UI state so the rail is seamless across devices. The bridge is
@@ -14,11 +19,19 @@ export type UiState = {
   workspaces: PersistedWorkspace[]
   activePath: string | null
   sessions: PersistedSession[]
+  /** how much the agent may do without asking; server-backed so all devices agree */
+  permissionMode: PermissionMode
   /** bumped on every write so clients can drop stale frames */
   rev: number
 }
 
-const EMPTY: UiState = { workspaces: [], activePath: null, sessions: [], rev: 0 }
+const EMPTY: UiState = {
+  workspaces: [],
+  activePath: null,
+  sessions: [],
+  permissionMode: DEFAULT_PERMISSION_MODE,
+  rev: 0,
+}
 
 // Location of the state file. Override with OPENCLAUDE_STUDIO_STATE_FILE when
 // the default location is not writable (e.g. a systemd unit that only allows
@@ -39,6 +52,9 @@ export async function readState(home: string = homedir()): Promise<UiState> {
       workspaces: Array.isArray(p.workspaces) ? p.workspaces : [],
       activePath: typeof p.activePath === 'string' ? p.activePath : null,
       sessions: Array.isArray(p.sessions) ? p.sessions : [],
+      permissionMode: isPermissionMode(p.permissionMode)
+        ? p.permissionMode
+        : EMPTY.permissionMode,
       rev: typeof p.rev === 'number' ? p.rev : 0,
     }
   } catch {

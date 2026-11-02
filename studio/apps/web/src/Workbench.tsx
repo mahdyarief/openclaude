@@ -10,6 +10,12 @@ import {
   ProjectRail,
   SessionTabs,
 } from '@openclaude-studio/ui'
+import {
+  PERMISSION_MODE_LABELS,
+  PERMISSION_MODES,
+  isPermissionMode,
+  type PermissionMode,
+} from '@openclaude-studio/acp'
 import type { BridgeConfig } from './bridge-config.js'
 import type { ActiveProject } from './project-store.js'
 import { useAgentSession } from './use-agent-session.js'
@@ -18,11 +24,20 @@ import { groupSessions, useProjectSessions } from './use-projects.js'
 import { useTabs, type Tab } from './use-tabs.js'
 import { useWorkspaceSessions } from './use-workspace-sessions.js'
 
+/** The mode selector's entries — derived from the canonical list so adding a
+ *  mode to `@openclaude-studio/acp` automatically extends this dropdown. */
+const PERMISSION_MODE_OPTIONS = PERMISSION_MODES.map(mode => ({
+  id: mode,
+  label: PERMISSION_MODE_LABELS[mode],
+}))
+
 export function Workbench({
   config,
   project,
   projects,
   openSessions,
+  permissionMode,
+  onPermissionModeChange,
   onOpenSessionsChange,
   onAddProject,
   onSwitchProject,
@@ -35,6 +50,10 @@ export function Workbench({
   projects: ActiveProject[]
   /** session ids that are open in tabs, server-backed */
   openSessions: string[]
+  /** current agent permission mode, server-backed */
+  permissionMode: PermissionMode
+  /** change the permission mode (persisted to the bridge) */
+  onPermissionModeChange: (mode: PermissionMode) => void
   /** called whenever the open session set changes */
   onOpenSessionsChange: (ids: string[]) => void
   onAddProject: () => void
@@ -228,6 +247,8 @@ export function Workbench({
                   config={config}
                   cwd={tab.cwd}
                   sessionId={tab.sessionId?.startsWith('new-') ? undefined : tab.sessionId}
+                  permissionMode={permissionMode}
+                  onPermissionModeChange={onPermissionModeChange}
                   onSessionCreated={realId => handleSessionCreated(tab.tabId, realId, tab.cwd)}
                   onConnectionFailed={onConnectionFailed}
                 />
@@ -254,12 +275,18 @@ function SessionPane({
   config,
   cwd,
   sessionId,
+  permissionMode,
+  onPermissionModeChange,
   onSessionCreated,
   onConnectionFailed,
 }: {
   config: BridgeConfig
   cwd: string
   sessionId?: string | undefined
+  /** current agent permission mode, server-backed */
+  permissionMode: PermissionMode
+  /** change the permission mode (persisted to the bridge) */
+  onPermissionModeChange: (mode: PermissionMode) => void
   onSessionCreated: (realId: string) => void
   onConnectionFailed?: (() => void) | undefined
 }) {
@@ -361,6 +388,11 @@ function SessionPane({
         onCancel={cancel}
         disabled={disabled}
         streaming={state.streaming}
+        modes={PERMISSION_MODE_OPTIONS}
+        mode={permissionMode}
+        onModeChange={id => {
+          if (isPermissionMode(id)) onPermissionModeChange(id)
+        }}
         labels={{ placeholder: disabled ? 'Connecting…' : 'Ask OpenClaude…' }}
       />
     </ChatPane>

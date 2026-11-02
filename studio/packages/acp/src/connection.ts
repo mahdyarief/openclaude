@@ -26,6 +26,8 @@ export type AgentConnectionOptions = {
    * (via `session/load`) instead of starting a brand new one (`session/new`).
    */
   sessionId?: string
+  /** how much the agent may act without asking; forwarded to the ACP session */
+  permissionMode?: string
 }
 
 /**
@@ -86,7 +88,7 @@ export type AgentHandshake = {
    * lazily so no `session/new` (and no empty session file) happens until the
    * first prompt.
    */
-  startSession: (cwd: string) => Promise<ActiveSessionLike>
+  startSession: (cwd: string, permissionMode?: string) => Promise<ActiveSessionLike>
   close: () => void
 }
 
@@ -118,8 +120,14 @@ export async function connectHandshake(
   return {
     connection,
     agentInfo,
-    startSession: async (cwd: string) => {
-      const session = await connection.agent.buildSession(cwd).start()
+    startSession: async (cwd: string, permissionMode?: string) => {
+      const session = await connection.agent
+        .buildSession({
+          cwd,
+          mcpServers: [],
+          ...(permissionMode ? { _meta: { permissionMode } } : {}),
+        })
+        .start()
       const sessionLike: ActiveSessionLike = session
       return sessionLike
     },
@@ -180,6 +188,7 @@ export async function createAgentConnection(
       cwd: options.cwd,
       mcpServers: [],
       sessionId,
+      ...(options.permissionMode ? { _meta: { permissionMode: options.permissionMode } } : {}),
     })
     const session: ActiveSessionLike = {
       sessionId,
@@ -202,7 +211,15 @@ export async function createAgentConnection(
     }
   }
 
-  const session = await connection.agent.buildSession(options.cwd).start()
+  const session = await connection.agent
+    .buildSession({
+      cwd: options.cwd,
+      mcpServers: [],
+      ...(options.permissionMode
+        ? { _meta: { permissionMode: options.permissionMode } }
+        : {}),
+    })
+    .start()
   // Assigning the real `ActiveSession` to `ActiveSessionLike` performs the
   // structural check at compile time; no `unknown` cast is needed.
   const sessionLike: ActiveSessionLike = session

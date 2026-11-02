@@ -5,8 +5,46 @@ import {
   type SDKSession,
 } from './sdk/v2.js'
 import type { SDKPermissionRequestMessage, SDKMessage } from './sdk/shared.js'
+import type { PermissionResult } from './sdk/coreTypes.generated.js'
 import { runOutsideSdkContext } from '../bootstrap/state.js'
 import { init } from './init.js'
+import { getClaudeCodeMcpConfigs } from '../services/mcp/config.js'
+import type { ScopedMcpServerConfig } from '../services/mcp/types.js'
+
+/**
+ * Tool permission mode. The default is `bypassPermissions` so the agent can
+ * use every tool (e.g. web search, shell, MCP) without per-call approval.
+ * Clients that want per-call confirmation can pass `permissionMode: 'default'`
+ * or `'plan'` in the session options.
+ */
+const permissionMode =
+  (process.env.OPENCLAUDE_ACP_PERMISSION_MODE as 'default' | 'plan' | 'auto-accept' | 'bypass-permissions' | 'bypassPermissions' | 'fullAccess' | 'dontAsk' | undefined) ??
+  'bypassPermissions'
+
+/**
+ * The studio UI sends the effective permission mode inside the session
+ * request's `_meta`. `session/new` and `session/load` both carry it, so this
+ * helper reads whichever is present and lets the client override the env
+ * default.
+ */
+function resolveSessionPermissionMode(params: Record<string, unknown> | undefined): string {
+  const meta = isRecord(params?.['_meta']) ? params['_meta'] : undefined
+  const mode = meta?.permissionMode
+  return typeof mode === 'string' && mode !== '' ? mode : permissionMode
+}
+
+/**
+ * MCP servers from the user's config, available to every ACP session.
+ * Loaded lazily so a slow or unreachable server doesn't block session setup.
+ */
+async function loadMcpServers(): Promise<Record<string, ScopedMcpServerConfig> | undefined> {
+  try {
+    const { servers } = await getClaudeCodeMcpConfigs()
+    return servers
+  } catch {
+    return undefined
+  }
+}
 
 const ACP_PROTOCOL_VERSION = 1
 const ACP_AGENT_INFO = {
@@ -108,6 +146,29 @@ export function createAcpServer(
     write({ jsonrpc: '2.0', id, result })
   }
 
+  /**
+   * The ACP spec resolves permission responses through
+   * `outcome: { outcome: 'selected', optionId }` (or `'cancelled'`), not the
+   * raw optionId. This normalizes whatever the client sends so a rejected
+   * response never falls through as a silent deny.
+   */
+  function resolvePermission(result: unknown): PermissionResult {
+    const payload = isRecord(result) ? result : {}
+    const outcome = isRecord(payload.outcome) ? payload.outcome : {}
+    const optionId = typeof outcome.optionId === 'string' ? outcome.optionId : null
+    if (outcome.outcome === 'selected' && optionId !== null && optionId.startsWith('allow')) {
+      return {
+        behavior: 'allow',
+        decisionClassification: 'user_temporary',
+      }
+    }
+    return {
+      behavior: 'deny',
+      message: 'Permission denied by ACP client',
+      decisionClassification: 'user_reject',
+    }
+  }
+
   const fail = (id: JsonRpcId, code: number, message: string): void => {
     write({ jsonrpc: '2.0', id, error: { code, message } })
   }
@@ -123,17 +184,7 @@ export function createAcpServer(
   ): void => {
     const id = nextRequestId++
     pendingRequests.set(id, result => {
-      const optionId = isRecord(result) && typeof result.optionId === 'string' ? result.optionId : 'reject'
-      session.respondToPermission(message.tool_use_id, optionId === 'allow'
-        ? {
-            behavior: 'allow',
-            decisionClassification: 'user_temporary',
-          }
-        : {
-            behavior: 'deny',
-            message: 'Permission denied by ACP client',
-            decisionClassification: 'user_reject',
-          })
+      session.respondToPermission(message.tool_use_id, resolvePermission(result))
     })
 
     write({
@@ -191,11 +242,22 @@ export function createAcpServer(
 
     if (message.method === 'session/new') {
       const cwd = typeof message.params?.cwd === 'string' ? message.params.cwd : process.cwd()
+      const mode = resolveSessionPermissionMode(message.params)
+      const mcpServers = await loadMcpServers()
       let session: SDKSession
       const onPermissionRequest = (permission: SDKPermissionRequestMessage): void => {
         requestPermission(session.sessionId, session, permission)
       }
-      session = unstable_v2_createSession({ cwd, onPermissionRequest })
+      session = unstable_v2_createSession({
+        cwd,
+        // The SDK's `QueryPermissionMode` option type predates the `fullAccess`
+        // and `dontAsk` modes; all six values are accepted at runtime and
+        // normalized internally, so we widen the string here.
+        permissionMode: mode as Parameters<typeof unstable_v2_createSession>[0]['permissionMode'],
+        allowDangerouslySkipPermissions: mode === 'bypassPermissions' || mode === 'fullAccess',
+        mcpServers,
+        onPermissionRequest,
+      })
       sessions.set(session.sessionId, { cwd, session, active: null })
       if (message.id !== undefined) respond(message.id, { sessionId: session.sessionId })
       return
@@ -208,11 +270,19 @@ export function createAcpServer(
         if (message.id !== undefined) fail(message.id, -32602, 'session/load requires sessionId')
         return
       }
+      const mode = resolveSessionPermissionMode(message.params)
+      const mcpServers = await loadMcpServers()
       let session: SDKSession
       const onPermissionRequest = (permission: SDKPermissionRequestMessage): void => {
         requestPermission(session.sessionId, session, permission)
       }
-      session = await unstable_v2_resumeSession(sessionId, { cwd, onPermissionRequest })
+      session = await unstable_v2_resumeSession(sessionId, {
+        cwd,
+        permissionMode: mode as Parameters<typeof unstable_v2_resumeSession>[1]['permissionMode'],
+        allowDangerouslySkipPermissions: mode === 'bypassPermissions' || mode === 'fullAccess',
+        mcpServers,
+        onPermissionRequest,
+      })
       sessions.set(sessionId, { cwd, session, active: null })
       if (message.id !== undefined) respond(message.id, { sessionId })
       return

@@ -10,7 +10,12 @@ export { default as ChatComposer } from "./ChatComposer.js";
 export type { ChatComposerProps, ChatComposerLabels } from "./ChatComposer.js";
 
 export { default as PromptBar } from "./PromptBar.js";
-export type { PromptBarProps, PromptBarLabels, PromptTab } from "./PromptBar.js";
+export type {
+  PromptBarProps,
+  PromptBarLabels,
+  PromptBarModeOption,
+  PromptTab,
+} from "./PromptBar.js";
 
 export { default as LoadingState } from "./LoadingState.js";
 export type {

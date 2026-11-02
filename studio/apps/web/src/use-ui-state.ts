@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  DEFAULT_PERMISSION_MODE,
   fetchUiState,
+  isPermissionMode,
   saveUiState,
   subscribeUiState,
+  type PermissionMode,
   type UiState,
 } from '@openclaude-studio/acp'
 import type { BridgeConfig } from './bridge-config.js'
@@ -36,10 +39,13 @@ export type UiStateController = {
   active: ActiveProject | null
   /** open session ids, persisted so every device resumes the same tabs */
   openSessions: string[]
+  /** agent permission mode, server-backed so every device shares one setting */
+  permissionMode: PermissionMode
   addProject: (project: ActiveProject) => void
   removeProject: (path: string) => void
   switchProject: (project: ActiveProject) => void
   setOpenSessions: (ids: string[]) => void
+  setPermissionMode: (mode: PermissionMode) => void
   refresh: () => void
 }
 
@@ -57,6 +63,9 @@ export function useUiState(config: BridgeConfig | null): UiStateController {
     readActiveProject(typeof localStorage === 'undefined' ? null : localStorage),
   )
   const [openSessions, setOpenSessions] = useState<string[]>([])
+  const [permissionMode, setPermissionModeState] = useState<PermissionMode>(
+    DEFAULT_PERMISSION_MODE,
+  )
   const [loading, setLoading] = useState(true)
   const loadedRef = useRef(false)
   const activeRef = useRef(active)
@@ -65,16 +74,24 @@ export function useUiState(config: BridgeConfig | null): UiStateController {
   projectsRef.current = projects
   const openSessionsRef = useRef(openSessions)
   openSessionsRef.current = openSessions
+  const permissionModeRef = useRef(permissionMode)
+  permissionModeRef.current = permissionMode
   // Highest server revision we've consumed; SSE frames at or below it are stale.
   const localRevRef = useRef(-1)
 
   const persist = useCallback(
-    (nextProjects: ActiveProject[], nextActive: ActiveProject | null, nextOpen: string[]) => {
+    (
+      nextProjects: ActiveProject[],
+      nextActive: ActiveProject | null,
+      nextOpen: string[],
+      nextMode: PermissionMode = permissionModeRef.current,
+    ) => {
       if (!config) return
       void saveUiState(config.url, config.token, {
         workspaces: nextProjects.map(p => ({ path: p.path, name: p.name })),
         activePath: nextActive?.path ?? null,
         sessions: nextOpen.map(id => ({ id, title: id })),
+        permissionMode: nextMode,
       }).catch(() => {
         /* offline: keep the in-memory state; the next save retries */
       })
@@ -106,6 +123,7 @@ export function useUiState(config: BridgeConfig | null): UiStateController {
         setProjects(nextProjects)
         setActive(nextActive)
         setOpenSessions((server.sessions ?? []).map(s => s.id))
+        if (isPermissionMode(server.permissionMode)) setPermissionModeState(server.permissionMode)
         if (nextActive) saveActiveProject(localStorage, nextActive)
       })
       .catch(() => {
@@ -133,6 +151,7 @@ export function useUiState(config: BridgeConfig | null): UiStateController {
       if (rev <= localRevRef.current) return
       localRevRef.current = rev
       setOpenSessions((server.sessions ?? []).map(s => s.id))
+      if (isPermissionMode(server.permissionMode)) setPermissionModeState(server.permissionMode)
       const serverProjects = toProjects(server.workspaces)
       if (serverProjects.length > 0) setProjects(serverProjects)
       if (server.activePath) {
@@ -211,15 +230,25 @@ export function useUiState(config: BridgeConfig | null): UiStateController {
       })
   }, [config])
 
+  const setPermissionMode = useCallback(
+    (mode: PermissionMode) => {
+      setPermissionModeState(mode)
+      persist(projectsRef.current, activeRef.current, openSessionsRef.current, mode)
+    },
+    [persist],
+  )
+
   return {
     loading,
     projects,
     active,
     openSessions,
+    permissionMode,
     addProject,
     removeProject,
     switchProject,
     setOpenSessions: setOpenSessionsCb,
+    setPermissionMode,
     refresh,
   }
 }

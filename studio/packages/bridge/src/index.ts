@@ -7,6 +7,7 @@ import { WebSocketServer, type WebSocket } from 'ws'
 import { browseDirectory, listRoots } from './browse.js'
 import { listDirectory, readFileScoped, writeFileScoped } from './fs.js'
 import { getSessionHistory, listProjects, listSessions, projectsRoot } from './sessions.js'
+import { isPermissionMode } from '@openclaude-studio/acp'
 import { readState, writeState, type UiState } from './state.js'
 
 export type BridgeOptions = {
@@ -78,10 +79,22 @@ export async function startBridge(options: BridgeOptions = {}): Promise<{
   // devices writing at once both read the same base rev and stamp the same
   // value, so clients could drop the second write as a stale frame.
   let writeQueue: Promise<unknown> = Promise.resolve()
-  const saveState = (next: Omit<UiState, 'rev'>): Promise<UiState> => {
+  const saveState = (
+    next: Omit<UiState, 'rev' | 'permissionMode'> & { permissionMode?: unknown },
+  ): Promise<UiState> => {
     const run = writeQueue.then(async () => {
       const base = await readState()
-      const saved = await writeState({ ...next, rev: base.rev })
+      // An older client that doesn't send permissionMode must not reset the
+      // mode other devices chose; only an explicit valid mode changes it.
+      const saved = await writeState({
+        workspaces: next.workspaces,
+        activePath: next.activePath,
+        sessions: next.sessions,
+        permissionMode: isPermissionMode(next.permissionMode)
+          ? next.permissionMode
+          : base.permissionMode,
+        rev: base.rev,
+      })
       broadcastState(saved)
       return saved
     })
@@ -144,6 +157,7 @@ export async function startBridge(options: BridgeOptions = {}): Promise<{
               workspaces: Array.isArray(body.workspaces) ? body.workspaces : [],
               activePath: typeof body.activePath === 'string' ? body.activePath : null,
               sessions: Array.isArray(body.sessions) ? body.sessions : [],
+              permissionMode: body.permissionMode,
             })
             res.writeHead(200, { 'content-type': 'application/json', ...cors })
             res.end(JSON.stringify(saved))

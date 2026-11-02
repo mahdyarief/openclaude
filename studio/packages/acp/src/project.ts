@@ -65,10 +65,46 @@ export async function fetchSessionHistory(
 
 export type UiStateWorkspace = { path: string; name: string }
 export type UiStateSession = { id: string; title: string }
+
+/**
+ * The full set of permission modes the agent supports, mirroring OpenClaude's
+ * own modes. Kept as a single constant so the bridge, the ACP client, and the
+ * UI selector all derive their lists from here — adding a mode means editing
+ * one place, not the bridge, the client, and the dropdown separately.
+ */
+export const PERMISSION_MODES = [
+  'default',
+  'acceptEdits',
+  'plan',
+  'bypassPermissions',
+  'fullAccess',
+  'dontAsk',
+] as const satisfies readonly string[]
+
+export type PermissionMode = (typeof PERMISSION_MODES)[number]
+
+/** Human-facing labels for the selector, keyed by mode. Single source of truth. */
+export const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
+  default: 'Default',
+  acceptEdits: 'Accept edits',
+  plan: 'Plan mode',
+  bypassPermissions: 'Bypass permissions',
+  fullAccess: 'Full access',
+  dontAsk: "Don't ask",
+}
+
+export const DEFAULT_PERMISSION_MODE: PermissionMode = 'bypassPermissions'
+
+export function isPermissionMode(value: unknown): value is PermissionMode {
+  return typeof value === 'string' && (PERMISSION_MODES as readonly string[]).includes(value)
+}
+
 export type UiState = {
   workspaces: UiStateWorkspace[]
   activePath: string | null
   sessions: UiStateSession[]
+  /** how much the agent may act without asking; server-backed so every device agrees */
+  permissionMode?: PermissionMode
   /** server-assigned monotonic revision; the client drops frames at or below its last seen rev */
   rev?: number
 }

@@ -21,6 +21,8 @@ export type AgentSessionOptions = {
   token: string
   cwd: string
   sessionId?: string
+  /** forwarded to `session/new`/`session/load` so the agent uses the chosen mode */
+  permissionMode?: string
 }
 
 export type SessionMode =
@@ -48,7 +50,7 @@ type AgentSession = {
 const HANDSHAKE_TIMEOUT_MS = 10000
 
 export function useAgentSession(options: AgentSessionOptions): AgentSession {
-  const { url, token, cwd, sessionId } = options
+  const { url, token, cwd, sessionId, permissionMode } = options
   const [state, setState] = useState<SessionState>(() => emptySession('', ''))
   const [status, setStatus] = useState<ConnectionStatus>('connecting')
   const [error, setError] = useState<string | null>(null)
@@ -158,6 +160,7 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
             token,
             cwd,
             sessionId: mode.sessionId,
+            ...(permissionMode ? { permissionMode } : {}),
             onUpdate: applyUpdate,
             onPermission: requestPermission,
           }),
@@ -261,7 +264,10 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
         })
 
         // Reuse the already-initialized connection to run `session/new`.
-        const session = await Promise.race([handshake.startSession(cwd), timeout])
+        const session = await Promise.race([
+          handshake.startSession(cwd, permissionMode),
+          timeout,
+        ])
 
         if (!mountedRef.current || nonce !== connectNonce.current) {
           // Resolved after unmount or a newer connect: tear down the orphan.

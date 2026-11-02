@@ -123,4 +123,36 @@ describe('GET /state/stream (SSE)', () => {
     const res = await fetch(`${httpUrl(bridge.url)}/state/stream`)
     expect(res.status).toBe(401)
   })
+
+  it('normalizes permissionMode on PUT and replays it', async () => {
+    const bridge = await startBridge()
+    closer = bridge.close
+
+    const put = (mode: string): Promise<Response> =>
+      fetch(`${httpUrl(bridge.url)}/state?token=${encodeURIComponent(bridge.token)}`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          workspaces: [],
+          activePath: null,
+          sessions: [],
+          permissionMode: mode,
+        }),
+      })
+
+    const res = await put('fullAccess')
+    const saved = (await res.json()) as { permissionMode: string; rev: number }
+    expect(saved.permissionMode).toBe('fullAccess')
+    expect(saved.rev).toBe(1)
+
+    // An unknown mode leaves the previously-set mode intact (no reset to default).
+    const fallback = await put('not-a-mode')
+    const savedFallback = (await fallback.json()) as { permissionMode: string }
+    expect(savedFallback.permissionMode).toBe('fullAccess')
+
+    // GET /state reflects the latest valid write.
+    const res2 = await fetch(`${httpUrl(bridge.url)}/state?token=${encodeURIComponent(bridge.token)}`)
+    const state = (await res2.json()) as { permissionMode: string }
+    expect(state.permissionMode).toBe('fullAccess')
+  })
 })
