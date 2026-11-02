@@ -17,9 +17,10 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-# Writable: openclaude runtime data/config, studio UI state, and the repo tree
-# (pnpm/bun rebuilds write node_modules and dist under %h/code/openclaude).
-ReadWritePaths=%h/.local/share/openclaude %h/.config/openclaude %h/.config/openclaude-studio %h/code/openclaude
+# Writable: openclaude runtime data/config (session JSONL under %h/.openclaude),
+# studio UI state, and the repo tree (pnpm/bun rebuilds write node_modules and
+# dist under %h/code/openclaude).
+ReadWritePaths=%h/.local/share/openclaude %h/.config/openclaude %h/.openclaude %h/.config/openclaude-studio %h/code/openclaude
 StandardOutput=journal
 StandardError=journal
 

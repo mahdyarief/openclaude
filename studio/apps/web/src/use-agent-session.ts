@@ -35,6 +35,8 @@ type AgentSession = {
   state: SessionState
   status: ConnectionStatus
   error: string | null
+  /** true between sending a prompt and the first streamed chunk (agent "thinking") */
+  awaiting: boolean
   sessionId: string | null
   sendPrompt: (text: string) => void
   cancel: () => void
@@ -52,6 +54,7 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
   const [error, setError] = useState<string | null>(null)
   const [pendingPermission, setPendingPermission] = useState<PermissionRequest | null>(null)
   const [activeSessionId, setActiveSessionId] = useState<string | null>(sessionId ?? null)
+  const [awaiting, setAwaiting] = useState(false)
 
   const handleRef = useRef<AgentConnectionHandle | null>(null)
   const handshakeRef = useRef<AgentHandshake | null>(null)
@@ -79,6 +82,11 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
         const store = storeRef.current
         if (!store) return
         store.applyUpdate(notification)
+        // Any streamed output means the agent has started responding.
+        const kind = notification.update.sessionUpdate
+        if (kind === 'agent_message_chunk' || kind === 'agent_thought_chunk' || kind === 'tool_call') {
+          setAwaiting(false)
+        }
         setState(store.getState())
       })
       // A malformed update must not poison the chain: the turn-end reset in
@@ -309,6 +317,7 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
         }))
         setState(store.getState())
       }
+      setAwaiting(true)
       void handle.session
         .prompt(text)
         .then(response => {
@@ -322,6 +331,7 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
               store.setStreaming(false)
               store.setState(state => ({ ...state, stopReason: response.stopReason }))
               setState(store.getState())
+              setAwaiting(false)
             })
             .catch(() => {})
         })
@@ -332,6 +342,7 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
               if (!store) return
               store.setStreaming(false)
               setState(store.getState())
+              setAwaiting(false)
             })
             .catch(() => {})
           setError(cause instanceof Error ? cause.message : String(cause))
@@ -342,6 +353,7 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
   const cancel = useCallback(() => {
     const handle = handleRef.current
     if (!handle) return
+    setAwaiting(false)
     void handle.connection.agent.request('session/cancel', {
       sessionId: handle.sessionId,
     })
@@ -363,6 +375,7 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
     state,
     status,
     error,
+    awaiting,
     sessionId: activeSessionId,
     sendPrompt,
     cancel,

@@ -14,9 +14,11 @@ export type UiState = {
   workspaces: PersistedWorkspace[]
   activePath: string | null
   sessions: PersistedSession[]
+  /** bumped on every write so clients can drop stale frames */
+  rev: number
 }
 
-const EMPTY: UiState = { workspaces: [], activePath: null, sessions: [] }
+const EMPTY: UiState = { workspaces: [], activePath: null, sessions: [], rev: 0 }
 
 // Location of the state file. Override with OPENCLAUDE_STUDIO_STATE_FILE when
 // the default location is not writable (e.g. a systemd unit that only allows
@@ -37,14 +39,17 @@ export async function readState(home: string = homedir()): Promise<UiState> {
       workspaces: Array.isArray(p.workspaces) ? p.workspaces : [],
       activePath: typeof p.activePath === 'string' ? p.activePath : null,
       sessions: Array.isArray(p.sessions) ? p.sessions : [],
+      rev: typeof p.rev === 'number' ? p.rev : 0,
     }
   } catch {
     return EMPTY
   }
 }
 
-export async function writeState(next: UiState, home: string = homedir()): Promise<void> {
+export async function writeState(next: UiState, home: string = homedir()): Promise<UiState> {
   const target = statePath(home)
   await mkdir(dirname(target), { recursive: true })
-  await writeFile(target, JSON.stringify(next), 'utf8')
+  const stamped: UiState = { ...next, rev: next.rev + 1 }
+  await writeFile(target, JSON.stringify(stamped), 'utf8')
+  return stamped
 }

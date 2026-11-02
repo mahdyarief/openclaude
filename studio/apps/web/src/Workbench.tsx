@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   AppShell,
   Button,
@@ -117,6 +117,32 @@ export function Workbench({
     onOpenSessionsChange(openIds)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openKey])
+
+  // Restore: when the server reports open sessions (e.g. after a browser refresh
+  // or another device opened them), reopen any that have no tab yet. The session
+  // is loaded via `session/load` and its JSONL history replayed in useAgentSession.
+  // Tracks the ids already handled so a later server frame (another device
+  // opening a session) can still add its tab without re-opening ones we have.
+  const restoredRef = useRef(new Set<string>())
+  useEffect(() => {
+    const openSet = new Set(openIds)
+    for (const id of openSessions) {
+      if (openSet.has(id) || restoredRef.current.has(id)) continue
+      restoredRef.current.add(id)
+      let cwd = project.path
+      let title = id
+      for (const [path, entry] of Object.entries(byPath)) {
+        const summary = entry.sessions.find(s => s.id === id)
+        if (summary) {
+          cwd = path
+          title = summary.title || id
+          break
+        }
+      }
+      openTab({ tabId: id, kind: 'session', sessionId: id, title, cwd })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openSessions])
 
   const workspaces = workspaceProjects.map(project => {
     const entry = byPath[project.path]
@@ -245,6 +271,7 @@ function SessionPane({
     state,
     status,
     error,
+    awaiting,
     sendPrompt,
     cancel,
     ensureSession,
@@ -292,6 +319,7 @@ function SessionPane({
       messages={state.messages}
       toolCalls={state.toolCalls}
       streaming={state.streaming}
+      awaiting={awaiting}
       status={status}
       stopReason={state.stopReason}
     >

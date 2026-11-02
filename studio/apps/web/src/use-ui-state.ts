@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   fetchUiState,
   saveUiState,
+  subscribeUiState,
   type UiState,
 } from '@openclaude-studio/acp'
 import type { BridgeConfig } from './bridge-config.js'
@@ -15,6 +16,16 @@ import {
   forgetProject,
   saveActiveProject,
 } from './project-store.js'
+
+function sameSet(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false
+  const setB = new Set(b)
+  return a.every(id => setB.has(id))
+}
+
+function toProjects(workspaces: UiState['workspaces'] | undefined): ActiveProject[] {
+  return (workspaces ?? []).map(w => ({ path: w.path, name: w.name || folderName(w.path) }))
+}
 
 export type UiStateController = {
   /** true while the initial server state is still loading */
@@ -54,6 +65,8 @@ export function useUiState(config: BridgeConfig | null): UiStateController {
   projectsRef.current = projects
   const openSessionsRef = useRef(openSessions)
   openSessionsRef.current = openSessions
+  // Highest server revision we've consumed; SSE frames at or below it are stale.
+  const localRevRef = useRef(-1)
 
   const persist = useCallback(
     (nextProjects: ActiveProject[], nextActive: ActiveProject | null, nextOpen: string[]) => {
@@ -89,6 +102,7 @@ export function useUiState(config: BridgeConfig | null): UiStateController {
           nextProjects.find(p => p.path === nextActivePath) ??
           nextProjects[0] ??
           null
+        localRevRef.current = server.rev ?? 0
         setProjects(nextProjects)
         setActive(nextActive)
         setOpenSessions((server.sessions ?? []).map(s => s.id))
@@ -105,6 +119,31 @@ export function useUiState(config: BridgeConfig | null): UiStateController {
     }
     // Load only once per bridge connection.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config])
+
+  // Live sync: the bridge pushes state on every write, so opening a session on
+  // one device updates the rail on the others without a manual refresh. The
+  // server bumps `rev` on every write; we adopt a frame only when its rev is
+  // strictly higher than what we've already consumed, so a stale frame (e.g.
+  // our own write that hasn't propagated yet) is safely dropped.
+  useEffect(() => {
+    if (!config) return
+    const unsubscribe = subscribeUiState(config.url, config.token, server => {
+      const rev = server.rev ?? 0
+      if (rev <= localRevRef.current) return
+      localRevRef.current = rev
+      setOpenSessions((server.sessions ?? []).map(s => s.id))
+      const serverProjects = toProjects(server.workspaces)
+      if (serverProjects.length > 0) setProjects(serverProjects)
+      if (server.activePath) {
+        const found = serverProjects.find(p => p.path === server.activePath)
+        if (found) {
+          setActive(found)
+          saveActiveProject(localStorage, found)
+        }
+      }
+    })
+    return unsubscribe
   }, [config])
 
   const addProject = useCallback(
@@ -164,6 +203,7 @@ export function useUiState(config: BridgeConfig | null): UiStateController {
           const found = serverProjects.find(p => p.path === server.activePath)
           if (found) setActive(found)
         }
+        localRevRef.current = server.rev ?? 0
         setOpenSessions((server.sessions ?? []).map(s => s.id))
       })
       .catch(() => {

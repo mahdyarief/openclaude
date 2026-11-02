@@ -69,6 +69,8 @@ export type UiState = {
   workspaces: UiStateWorkspace[]
   activePath: string | null
   sessions: UiStateSession[]
+  /** server-assigned monotonic revision; the client drops frames at or below its last seen rev */
+  rev?: number
 }
 
 // The rail's pinned workspaces, active workspace, and open sessions live on the
@@ -93,6 +95,28 @@ export async function saveUiState(
   })
   if (!res.ok) throw new Error(`state save failed: ${res.status}`)
   return (await res.json()) as UiState
+}
+
+// Opens the SSE feed at `/state/stream` and invokes `onState` with each state
+// update (the initial snapshot, then every write). Returns an unsubscribe
+// function; the connection is closed on unmount. Keeps the rail in sync across
+// devices without polling.
+export function subscribeUiState(
+  baseUrl: string,
+  token: string,
+  onState: (state: UiState) => void,
+): () => void {
+  const url = `${httpOrigin(baseUrl)}/state/stream?token=${encodeURIComponent(token)}`
+  const source = new EventSource(url)
+  const handler = (event: MessageEvent): void => {
+    try {
+      onState(JSON.parse(event.data) as UiState)
+    } catch {
+      /* ignore malformed frames */
+    }
+  }
+  source.addEventListener('state', handler)
+  return () => source.close()
 }
 
 export type BrowseEntry = { name: string; path: string; kind: 'file' | 'dir' }

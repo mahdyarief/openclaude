@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { createServer, type IncomingMessage } from 'node:http'
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import { WebSocketServer, type WebSocket } from 'ws'
@@ -63,6 +63,31 @@ export async function startBridge(options: BridgeOptions = {}): Promise<{
     args: [defaultShim],
   }
   const children = new Set<ChildProcess>()
+  // Live SSE subscribers. `/state` writes broadcast to every device so opening a
+  // session on one device updates the rail on the others without a refresh.
+  const stateSubscribers = new Set<ServerResponse>()
+
+  const broadcastState = (state: UiState): void => {
+    const frame = `event: state\ndata: ${JSON.stringify(state)}\n\n`
+    for (const subscriber of stateSubscribers) {
+      subscriber.write(frame)
+    }
+  }
+
+  // Serializes read-modify-write cycles on the state file. Without this, two
+  // devices writing at once both read the same base rev and stamp the same
+  // value, so clients could drop the second write as a stale frame.
+  let writeQueue: Promise<unknown> = Promise.resolve()
+  const saveState = (next: Omit<UiState, 'rev'>): Promise<UiState> => {
+    const run = writeQueue.then(async () => {
+      const base = await readState()
+      const saved = await writeState({ ...next, rev: base.rev })
+      broadcastState(saved)
+      return saved
+    })
+    writeQueue = run.catch(() => undefined)
+    return run
+  }
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', `http://${host}`)
@@ -71,7 +96,8 @@ export async function startBridge(options: BridgeOptions = {}): Promise<{
       url.pathname === '/projects' ||
       url.pathname === '/sessions' ||
       url.pathname === '/session-history' ||
-      url.pathname === '/state'
+      url.pathname === '/state' ||
+      url.pathname === '/state/stream'
     ) {
       const cors = corsHeaders(req)
       const presented = url.searchParams.get('token')
@@ -94,18 +120,33 @@ export async function startBridge(options: BridgeOptions = {}): Promise<{
 
         // UI state lives on the server so the rail is identical on every device.
         // GET returns the state; PUT writes a new one (add/remove workspace,
-        // active workspace, open session list).
+        // active workspace, open session list). `/state/stream` opens an SSE feed
+        // that replays the current state and pushes updates on every write.
+        if (url.pathname === '/state/stream') {
+          res.writeHead(200, {
+            'content-type': 'text/event-stream',
+            'cache-control': 'no-cache, no-transform',
+            connection: 'keep-alive',
+            ...cors,
+          })
+          res.write('retry: 3000\n\n')
+          const state = await readState()
+          res.write(`event: state\ndata: ${JSON.stringify(state)}\n\n`)
+          stateSubscribers.add(res)
+          req.on('close', () => stateSubscribers.delete(res))
+          return
+        }
+
         if (url.pathname === '/state') {
           if (req.method === 'PUT') {
             const body = JSON.parse(await readBody(req))
-            const next: UiState = {
+            const saved = await saveState({
               workspaces: Array.isArray(body.workspaces) ? body.workspaces : [],
               activePath: typeof body.activePath === 'string' ? body.activePath : null,
               sessions: Array.isArray(body.sessions) ? body.sessions : [],
-            }
-            await writeState(next)
+            })
             res.writeHead(200, { 'content-type': 'application/json', ...cors })
-            res.end(JSON.stringify(next))
+            res.end(JSON.stringify(saved))
             return
           }
           const state = await readState()
@@ -348,6 +389,8 @@ export async function startBridge(options: BridgeOptions = {}): Promise<{
     url: `ws://${host}:${address.port}`,
     token,
     close: async () => {
+      for (const subscriber of stateSubscribers) subscriber.destroy()
+      stateSubscribers.clear()
       for (const client of wss.clients as Set<WebSocket>) client.terminate()
       for (const child of children) {
         if (child.exitCode !== null || child.signalCode !== null) continue
