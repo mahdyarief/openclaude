@@ -5,10 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=dy
-# Studio is nested under the openclaude repo; %h expands to the unit's home.
+# Studio is nested under the openclaude repo. %h expands to this user's home, so
+# nothing below assumes a specific account or absolute path.
 WorkingDirectory=%h/code/openclaude/studio
-EnvironmentFile=/home/dy/.config/openclaude-studio/bridge.env
+EnvironmentFile=%h/.config/openclaude-studio/bridge.env
 # Bind address comes from OPENCLAUDE_BRIDGE_HOST in bridge.env.
 ExecStart=/usr/bin/node packages/bridge/dist/cli.js
 Restart=on-failure
