@@ -8,7 +8,8 @@ Type=simple
 User=dy
 WorkingDirectory=/home/dy/code/openclaude/studio
 EnvironmentFile=/home/dy/.config/openclaude-studio/bridge.env
-ExecStart=/usr/bin/node packages/bridge/dist/cli.js --host 100.84.56.62
+# Bind address comes from OPENCLAUDE_BRIDGE_HOST in bridge.env.
+ExecStart=/usr/bin/node packages/bridge/dist/cli.js
 Restart=on-failure
 RestartSec=2
 NoNewPrivileges=true
