@@ -1,0 +1,25 @@
+[Unit]
+Description=OpenClaude Studio bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dy
+WorkingDirectory=/home/dy/code/openclaude/studio
+EnvironmentFile=/home/dy/.config/openclaude-studio/bridge.env
+ExecStart=/usr/bin/node packages/bridge/dist/cli.js
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+# Writable: openclaude runtime data/config, studio UI state, and the repo tree
+# (pnpm/bun rebuilds write node_modules and dist under /home/dy/code/openclaude).
+ReadWritePaths=/home/dy/.local/share/openclaude /home/dy/.config/openclaude /home/dy/code/openclaude
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

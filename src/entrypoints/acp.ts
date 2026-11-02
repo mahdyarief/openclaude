@@ -5,6 +5,8 @@ import {
   type SDKSession,
 } from './sdk/v2.js'
 import type { SDKPermissionRequestMessage, SDKMessage } from './sdk/shared.js'
+import { runOutsideSdkContext } from '../bootstrap/state.js'
+import { init } from './init.js'
 
 const ACP_PROTOCOL_VERSION = 1
 const ACP_AGENT_INFO = {
@@ -162,8 +164,14 @@ export function createAcpServer(
       return
     }
 
-    if (message.method === 'initialize') {
+    // init() must run before session creation; it enables configs and must not
+    // run inside the SDK's AsyncLocalStorage context.
+    if (!initialized) {
+      await runOutsideSdkContext(init)
       initialized = true
+    }
+
+    if (message.method === 'initialize') {
       if (message.id === undefined) return
       respond(message.id, {
         protocolVersion: ACP_PROTOCOL_VERSION,

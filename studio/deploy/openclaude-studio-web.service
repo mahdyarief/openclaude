@@ -1,0 +1,25 @@
+[Unit]
+Description=OpenClaude Studio web UI
+After=network-online.target openclaude-studio.service
+Wants=network-online.target
+PartOf=openclaude-studio.service
+
+[Service]
+Type=simple
+User=dy
+WorkingDirectory=/home/dy/code/openclaude/studio
+# Optional: WEB_HOST / WEB_PORT overrides. The server has no auth of its own,
+# so bind it to the Tailscale address (or keep loopback) rather than 0.0.0.0.
+EnvironmentFile=-/home/dy/.config/openclaude-studio/web.env
+ExecStart=/usr/bin/node deploy/web/serve.mjs
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
