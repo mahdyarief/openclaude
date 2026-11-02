@@ -6,8 +6,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=dy
-WorkingDirectory=/home/dy/code/openclaude/studio
-EnvironmentFile=/home/dy/.config/openclaude-studio/bridge.env
+# Studio is nested under the openclaude repo; %h expands to the unit's home.
+WorkingDirectory=%h/code/openclaude/studio
+EnvironmentFile=%h/.config/openclaude-studio/bridge.env
 # Bind address comes from OPENCLAUDE_BRIDGE_HOST in bridge.env.
 ExecStart=/usr/bin/node packages/bridge/dist/cli.js
 Restart=on-failure
@@ -17,8 +18,8 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
 # Writable: openclaude runtime data/config, studio UI state, and the repo tree
-# (pnpm/bun rebuilds write node_modules and dist under /home/dy/code/openclaude).
-ReadWritePaths=/home/dy/.local/share/openclaude /home/dy/.config/openclaude /home/dy/code/openclaude
+# (pnpm/bun rebuilds write node_modules and dist under %h/code/openclaude).
+ReadWritePaths=%h/.local/share/openclaude %h/.config/openclaude %h/code/openclaude
 StandardOutput=journal
 StandardError=journal
 
