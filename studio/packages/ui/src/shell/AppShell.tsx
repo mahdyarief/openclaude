@@ -88,6 +88,11 @@ export function AppShell({
   const [railSheet, setRailSheet] = useState(false)
   const [explorerSheet, setExplorerSheet] = useState(false)
 
+  // Track the previous collapsed state so `onResize` (fired on every drag
+  // frame) only flips our open/closed flags on an actual transition.
+  const railCollapsedRef = useRef(false)
+  const explorerCollapsedRef = useRef(false)
+
   // The `.dark` class on <html> drives every token. Keep the toggle in sync.
   const [dark, setDark] = useState(
     () => typeof document === 'undefined' || document.documentElement.classList.contains('dark'),
@@ -186,9 +191,15 @@ export function AppShell({
         className="h-full w-full"
         onLayoutChanged={(layout, meta) => {
           if (!meta.isUserInteraction) return
+          // layout values are PanelSize objects ({ asPercentage, inPixels }); we
+          // persist pixel sizes so they restore via the numeric `defaultSize`.
+          const rail = (layout as Record<string, { inPixels?: number }>)['rail']?.inPixels
+          const explorer = (layout as Record<string, { inPixels?: number }>)['explorer']?.inPixels
+          // A collapsed panel reports 0; keep the last open width so reopening
+          // restores the user's chosen size rather than a zero-width panel.
           persist({
-            rail: (layout as Record<string, number>)['rail'] ?? RAIL_DEFAULT_PX,
-            explorer: (layout as Record<string, number>)['explorer'] ?? EXPLORER_DEFAULT_PX,
+            rail: rail && rail > 0 ? rail : RAIL_DEFAULT_PX,
+            explorer: explorer && explorer > 0 ? explorer : EXPLORER_DEFAULT_PX,
           })
         }}
       >
@@ -200,7 +211,11 @@ export function AppShell({
           collapsedSize={0}
           collapsible
           onResize={(_, id) => {
-            if (id === 'rail') setRailOpen(!railRef.current?.isCollapsed())
+            if (id !== 'rail') return
+            const collapsed = railRef.current?.isCollapsed() ?? false
+            if (collapsed === railCollapsedRef.current) return
+            railCollapsedRef.current = collapsed
+            setRailOpen(!collapsed)
           }}
           className={cn('flex min-h-0 flex-col', railOpen ? 'border-r border-line' : 'overflow-hidden')}
         >
@@ -241,7 +256,11 @@ export function AppShell({
           collapsedSize={0}
           collapsible
           onResize={(_, id) => {
-            if (id === 'explorer') setExplorerOpen(!explorerRef.current?.isCollapsed())
+            if (id !== 'explorer') return
+            const collapsed = explorerRef.current?.isCollapsed() ?? false
+            if (collapsed === explorerCollapsedRef.current) return
+            explorerCollapsedRef.current = collapsed
+            setExplorerOpen(!collapsed)
           }}
           className={cn(
             'flex min-h-0 flex-col',
