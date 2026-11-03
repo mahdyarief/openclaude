@@ -13,3 +13,4 @@ export * from "./sheet.js";
 export * from "./dialog.js";
 export * from "./dropdown-menu.js";
 export * from "./theme-toggle.js";
+export * from "./resizable.js";
