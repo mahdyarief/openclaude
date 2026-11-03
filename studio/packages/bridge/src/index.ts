@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { browseDirectory, listRoots } from './browse.js'
 import { listDirectory, readFileScoped, writeFileScoped } from './fs.js'
+import { createMetricsSampler } from './metrics.js'
 import { getSessionHistory, listProjects, listSessions, projectsRoot } from './sessions.js'
 import { isPermissionMode } from '@openclaude-studio/acp'
 import { readState, writeState, type UiState } from './state.js'
@@ -64,6 +65,12 @@ export async function startBridge(options: BridgeOptions = {}): Promise<{
     args: [defaultShim],
   }
   const children = new Set<ChildProcess>()
+  // Resource sampler for the status footer. Cumulative CPU counters are
+  // converted to a percentage between polls, so the web client just reads it.
+  const sampleMetrics = createMetricsSampler({
+    startedAt: Date.now(),
+    activeSessions: () => children.size,
+  })
   // Live SSE subscribers. `/state` writes broadcast to every device so opening a
   // session on one device updates the rail on the others without a refresh.
   const stateSubscribers = new Set<ServerResponse>()
@@ -109,6 +116,7 @@ export async function startBridge(options: BridgeOptions = {}): Promise<{
       url.pathname === '/projects' ||
       url.pathname === '/sessions' ||
       url.pathname === '/session-history' ||
+      url.pathname === '/metrics' ||
       url.pathname === '/state' ||
       url.pathname === '/state/stream'
     ) {
@@ -128,6 +136,14 @@ export async function startBridge(options: BridgeOptions = {}): Promise<{
           const projects = await listProjects(projectsRoot())
           res.writeHead(200, { 'content-type': 'application/json', ...cors })
           res.end(JSON.stringify({ projects }))
+          return
+        }
+
+        // Lightweight host resource snapshot for the status footer. Reads from
+        // the pre-built sampler so the web client only polls JSON.
+        if (url.pathname === '/metrics') {
+          res.writeHead(200, { 'content-type': 'application/json', ...cors })
+          res.end(JSON.stringify(sampleMetrics()))
           return
         }
 

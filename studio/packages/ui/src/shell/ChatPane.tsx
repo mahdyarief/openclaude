@@ -7,6 +7,7 @@ import type {
 } from '@openclaude-studio/acp'
 import { LoadingState } from '../beautifui/index.js'
 import { cn } from '../lib/cn.js'
+import { Skeleton } from '../shadcn/skeleton.js'
 import { MessageList } from './MessageList.js'
 
 export type ChatPaneProps = {
@@ -15,6 +16,8 @@ export type ChatPaneProps = {
   streaming: boolean
   /** waiting for the first agent chunk after a prompt was sent */
   awaiting?: boolean
+  /** reading the stored transcript back from the bridge on a session/load */
+  loadingHistory?: boolean
   status: ConnectionStatus
   stopReason: StopReason | null
   /** composer pinned to the bottom */
@@ -34,6 +37,7 @@ export function ChatPane({
   toolCalls,
   streaming,
   awaiting,
+  loadingHistory,
   status,
   stopReason,
   children,
@@ -54,7 +58,25 @@ export function ChatPane({
       ) : null}
 
       <div className="min-h-0 flex-1">
-        <MessageList messages={messages} toolCalls={toolCalls} streaming={streaming} />
+        {loadingHistory ? (
+          <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-3 py-5 sm:px-6 sm:py-6">
+            <div className="flex items-center gap-2 pb-2">
+              <LoadingState variant="Dots" labels={{ label: 'Loading conversation' }} />
+              <span className="text-[12px] text-ink-3">Loading conversation…</span>
+            </div>
+            {[0, 1, 2].map(index => (
+              <div key={index} className="flex flex-col gap-2">
+                <div className="openclaude-prose">
+                  <Skeleton className="h-4 w-[70%]" />
+                  <Skeleton className="mt-2 h-4 w-[90%]" />
+                  <Skeleton className="mt-2 h-4 w-[55%]" />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <MessageList messages={messages} toolCalls={toolCalls} streaming={streaming} />
+        )}
         {awaiting ? (
           <div className="mx-auto w-full max-w-3xl px-3 pb-2 pt-1 sm:px-6">
             <div className="flex items-center gap-2">

@@ -61,6 +61,42 @@ describe('GET /projects', () => {
   })
 })
 
+describe('GET /metrics', () => {
+  it('requires the token', async () => {
+    const bridge = await startBridge()
+    closer = bridge.close
+
+    const res = await fetch(`${httpUrl(bridge.url)}/metrics`)
+
+    expect(res.status).toBe(401)
+  })
+
+  it('returns host resource metrics with the token', async () => {
+    const bridge = await startBridge()
+    closer = bridge.close
+
+    const res = await fetch(
+      `${httpUrl(bridge.url)}/metrics?token=${encodeURIComponent(bridge.token)}`,
+      { headers: { origin: 'http://localhost:8768' } },
+    )
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('access-control-allow-origin')).toBe('http://localhost:8768')
+    const body = await res.json() as {
+      cpuPercent: number
+      cpuCount: number
+      memory: { rssBytes: number }
+      systemMemory: { totalBytes: number; usedPercent: number }
+      activeSessions: number
+    }
+    expect(body.cpuPercent).toBeGreaterThanOrEqual(0)
+    expect(body.cpuCount).toBeGreaterThanOrEqual(1)
+    expect(body.memory.rssBytes).toBeGreaterThan(0)
+    expect(body.systemMemory.totalBytes).toBeGreaterThan(0)
+    expect(body.activeSessions).toBe(0)
+  })
+})
+
 describe('GET /sessions', () => {
   it('rejects a request without a token', async () => {
     const bridge = await startBridge()

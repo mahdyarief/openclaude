@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { cn } from "../lib/cn.js";
 import {
   DropdownMenu,
@@ -78,7 +78,17 @@ export type PromptBarProps = {
   onModeChange?: (mode: string) => void;
   labels?: Partial<PromptBarLabels>;
   className?: string;
+  /** slash commands advertised by the agent, powering the `/` menu */
+  commands?: Array<{ name: string; description: string }>;
 };
+
+// The last `/word` being typed at the end of the draft, if any. Mirrors the
+// upstream BeautifulUI parser: a leading `/` on a fresh token opens the menu.
+function parseSlash(draft: string): { query: string; start: number } | null {
+  const match = /(^|\s)\/([\w:-]*)$/.exec(draft);
+  if (!match) return null;
+  return { query: (match[2] ?? "").toLowerCase(), start: match.index + (match[1] ?? "").length };
+}
 
 export default function PromptBar({
   value,
@@ -96,11 +106,34 @@ export default function PromptBar({
   onModeChange,
   labels,
   className,
+  commands = [],
 }: PromptBarProps) {
   const l = { ...DEFAULT_LABELS, ...labels };
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const canSend = value.trim().length > 0 && !disabled && !streaming;
   const activeMode = modes?.find(option => option.id === mode) ?? modes?.[0];
+
+  const slash = parseSlash(value);
+  const matches = slash
+    ? commands
+        .filter(command => command.name.toLowerCase().startsWith(slash.query))
+        .slice(0, 8)
+    : [];
+  const menuOpen = slash !== null && matches.length > 0;
+  const [active, setActive] = useState(0);
+
+  // Reset the highlight whenever the query or the result set changes, and keep
+  // it in range when filtering shrinks the list.
+  useEffect(() => {
+    setActive(0);
+  }, [slash?.query, matches.length]);
+
+  const pick = (name: string) => {
+    if (!slash) return;
+    const before = value.slice(0, slash.start);
+    onChange(`${before}/${name} `);
+    inputRef.current?.focus();
+  };
 
   // Auto-grow the textarea up to ~6 lines, then scroll. `scrollHeight` is the
   // only reliable measure for a textarea that starts at one row.
@@ -110,6 +143,24 @@ export default function PromptBar({
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, 132)}px`;
   }, [value]);
+
+  const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (!menuOpen) return;
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setActive(i => (i + 1) % matches.length);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setActive(i => (i - 1 + matches.length) % matches.length);
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      const match = matches[active];
+      if (match) pick(match.name);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      onChange(value.slice(0, slash.start));
+    }
+  };
 
   const send = () => {
     if (!canSend) return;
@@ -150,13 +201,49 @@ export default function PromptBar({
       <div
         role="presentation"
         onClick={() => inputRef.current?.focus()}
-        className="flex cursor-text flex-col gap-2 bg-field p-2.5 transition-[border-color,box-shadow] duration-150 focus-within:bg-surface"
+        className="relative flex cursor-text flex-col gap-2 bg-field p-2.5 transition-[border-color,box-shadow] duration-150 focus-within:bg-surface"
       >
+        {menuOpen ? (
+          <div
+            role="listbox"
+            aria-label="Slash commands"
+            className="absolute inset-x-2 bottom-full z-10 mb-1 rounded-[var(--radius-card)] border border-line bg-surface p-1 shadow-[var(--shadow-card)]"
+            style={{ animation: "pop-in 180ms cubic-bezier(0.23,1,0.32,1) both", transformOrigin: "bottom center" }}
+          >
+            {matches.map((command, i) => (
+              <button
+                key={command.name}
+                type="button"
+                role="option"
+                aria-selected={i === active}
+                onMouseDown={(event) => event.preventDefault()}
+                onMouseEnter={() => setActive(i)}
+                onClick={() => pick(command.name)}
+                className={cn(
+                  "flex h-9 w-full items-center gap-2 rounded-[var(--radius-chip)] px-2 text-left transition-colors duration-100",
+                  i === active ? "bg-hover" : "hover:bg-hover",
+                )}
+              >
+                <span className="shrink-0 rounded-[var(--radius-chip)] border border-accent/30 bg-accent-tint px-1.5 py-0.5 font-mono text-[12px] font-medium text-accent-ink">
+                  /{command.name}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-[12px] text-ink-3">{command.description}</span>
+              </button>
+            ))}
+            <div className="mt-1 border-t border-line px-2 pt-1.5 pb-1 text-[11px] text-ink-3">
+              Type to filter commands · ↑↓ to move · Enter to insert
+            </div>
+          </div>
+        ) : null}
         <textarea
           ref={inputRef}
           value={value}
           onChange={(event) => onChange(event.target.value)}
           onKeyDown={(event) => {
+            if (menuOpen) {
+              onKeyDown(event);
+              if (event.defaultPrevented) return;
+            }
             if (event.key === "Enter" && !event.shiftKey) {
               event.preventDefault();
               send();

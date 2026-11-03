@@ -3,6 +3,7 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { Eye, FileText, Loader2, Pencil, Save } from "lucide-react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 import { Button } from "../shadcn/button.js";
 import { ScrollArea } from "../shadcn/scroll-area.js";
@@ -197,7 +198,7 @@ export function DocumentViewer({
               <p className="text-sm text-ink-3">This file is empty.</p>
             ) : (
               <div className="openclaude-prose text-ink">
-                <ReactMarkdown>{shownText}</ReactMarkdown>
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{shownText}</ReactMarkdown>
               </div>
             )}
           </div>

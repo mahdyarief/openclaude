@@ -39,6 +39,8 @@ type AgentSession = {
   error: string | null
   /** true between sending a prompt and the first streamed chunk (agent "thinking") */
   awaiting: boolean
+  /** true while the stored transcript is being read back from the bridge on a load */
+  loadingHistory: boolean
   sessionId: string | null
   sendPrompt: (text: string) => void
   cancel: () => void
@@ -57,6 +59,10 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
   const [pendingPermission, setPendingPermission] = useState<PermissionRequest | null>(null)
   const [activeSessionId, setActiveSessionId] = useState<string | null>(sessionId ?? null)
   const [awaiting, setAwaiting] = useState(false)
+  // True while the stored session transcript is being read back from the bridge
+  // on a `session/load`. The chat area shows a loading state instead of an
+  // empty transcript so the gap does not read as "no history".
+  const [loadingHistory, setLoadingHistory] = useState(false)
 
   const handleRef = useRef<AgentConnectionHandle | null>(null)
   const handshakeRef = useRef<AgentHandshake | null>(null)
@@ -174,6 +180,7 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
         // `session/load` resumes the agent's context but ACP does not replay
         // prior messages, so the transcript would stay empty. Read the JSONL
         // from the bridge and seed the store before adopting it.
+        setLoadingHistory(true)
         try {
           const history = await fetchSessionHistory(url, token, cwd, mode.sessionId)
           if (nonce === connectNonce.current && history.length > 0) {
@@ -187,6 +194,7 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
           handle.disconnect()
           return
         }
+        setLoadingHistory(false)
         adoptSession(handle.sessionId, store)
         return
       }
@@ -217,6 +225,9 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
       setStatus('dead')
     } finally {
       if (timer) clearTimeout(timer)
+      // A connect that failed after starting the history read (e.g. the
+      // socket died) must not leave the chat stuck on the skeleton forever.
+      if (nonce === connectNonce.current) setLoadingHistory(false)
     }
   }, [url, token, cwd, sessionId, applyUpdate, requestPermission, adoptSession])
 
@@ -385,6 +396,7 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
     status,
     error,
     awaiting,
+    loadingHistory,
     sessionId: activeSessionId,
     sendPrompt,
     cancel,

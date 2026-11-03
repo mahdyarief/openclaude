@@ -178,6 +178,12 @@
 
 /* ── base ─────────────────────────────────────────────── */
 
+html,
+body,
+#root {
+  height: 100%;
+}
+
 html {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -320,15 +326,34 @@ a {
   color: var(--ink-2);
 }
 .openclaude-prose table {
-  width: 100%;
+  display: block;
+  width: max-content;
+  max-width: 100%;
   border-collapse: collapse;
   font-size: 0.95em;
+  overflow-x: auto;
 }
 .openclaude-prose th,
 .openclaude-prose td {
   border: 1px solid var(--line);
   padding: 0.45em 0.6em;
   text-align: left;
+}
+.openclaude-prose ul.contains-task-list {
+  list-style: none;
+  padding-left: 0.2em;
+}
+.openclaude-prose li.task-list-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5em;
+}
+.openclaude-prose li.task-list-item input[type="checkbox"] {
+  margin-top: 0.25em;
+}
+.openclaude-prose del {
+  text-decoration: line-through;
+  color: var(--ink-3);
 }
 .openclaude-prose hr {
   border: 0;

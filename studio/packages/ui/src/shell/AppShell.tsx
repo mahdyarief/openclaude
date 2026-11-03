@@ -30,6 +30,8 @@ export type AppShellProps = {
   chat: ReactNode
   explorer: ReactNode
   overlay?: ReactNode
+  /** slim status bar pinned under every region, outside the resizable area */
+  footer?: ReactNode
   /** show the theme switcher */
   showThemeSwitcher?: boolean
 }
@@ -72,6 +74,7 @@ export function AppShell({
   chat,
   explorer,
   overlay,
+  footer,
   showThemeSwitcher = false,
 }: AppShellProps) {
   const [width, setWidth] = useState<number>(() =>
@@ -159,19 +162,19 @@ export function AppShell({
 
   if (isMobile) {
     return (
-      <div className="relative flex h-full w-full overflow-hidden bg-surface">
+      <div className="relative flex h-full w-full flex-col overflow-hidden bg-surface">
         <Sheet open={railSheet} onOpenChange={setRailSheet}>
-          <SheetContent side="left" className="w-[85%] max-w-[320px] p-0">
+          <SheetContent side="left" className="w-[85%] max-w-[320px] p-0" showClose={false}>
             <div className="h-full">{rail}</div>
           </SheetContent>
         </Sheet>
         <Sheet open={explorerSheet} onOpenChange={setExplorerSheet}>
-          <SheetContent side="right" className="w-[85%] max-w-[320px] p-0">
+          <SheetContent side="right" className="w-[85%] max-w-[320px] p-0" showClose={false}>
             <div className="h-full">{explorer}</div>
           </SheetContent>
         </Sheet>
 
-        <div className="flex h-full min-w-0 flex-1 flex-col">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <div className="flex h-9 shrink-0 items-center justify-between border-b border-line px-1">
             {railToggle}
             {explorerToggle}
@@ -179,16 +182,17 @@ export function AppShell({
           {tabs ? <div className="shrink-0">{tabs}</div> : null}
           <div className="min-h-0 flex-1 overflow-hidden">{chat}</div>
         </div>
+        {footer ? <div className="shrink-0">{footer}</div> : null}
         {overlay ? <div className="pointer-events-none absolute inset-0">{overlay}</div> : null}
       </div>
     )
   }
 
   return (
-    <div className="relative flex h-full w-full overflow-hidden bg-surface">
+    <div className="relative flex h-full w-full flex-col overflow-hidden bg-surface">
       <ResizablePanelGroup
         orientation="horizontal"
-        className="h-full w-full"
+        className="min-h-0 w-full flex-1"
         onLayoutChanged={(layout, meta) => {
           if (!meta.isUserInteraction) return
           // layout values are PanelSize objects ({ asPercentage, inPixels }); we
@@ -273,6 +277,7 @@ export function AppShell({
           <div className="min-h-0 flex-1 overflow-hidden">{explorer}</div>
         </ResizablePanel>
       </ResizablePanelGroup>
+      {footer ? <div className="shrink-0">{footer}</div> : null}
       {overlay ? <div className="pointer-events-none absolute inset-0">{overlay}</div> : null}
     </div>
   )

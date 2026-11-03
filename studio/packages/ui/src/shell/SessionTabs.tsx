@@ -114,7 +114,9 @@ export function SessionTabs({ tabs, activeId, onActivate, onClose }: SessionTabs
                   aria-label={`Close ${tab.title}`}
                   className={cn(
                     "mr-1 size-5 rounded-[4px] text-ink-3 hover:bg-line-strong hover:text-ink",
-                    active ? "opacity-100" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
+                    active
+                      ? "opacity-100"
+                      : "opacity-100 group-focus-within:opacity-100 sm:opacity-0 sm:group-hover:opacity-100",
                   )}
                 >
                   <X size={12} />

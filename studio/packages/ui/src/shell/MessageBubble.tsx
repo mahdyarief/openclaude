@@ -1,7 +1,9 @@
 import type { ConversationMessage, ToolCall } from '@openclaude-studio/acp'
 import ThinkingState from '../beautifui/ThinkingState.js'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { cn } from '../lib/cn.js'
+import { CommandChip, isCommandText, parseCommandInvocation } from './CommandChip.js'
 
 export type MessageBubbleProps = {
   message: ConversationMessage
@@ -31,10 +33,21 @@ export function MessageBubble({
       .map(part => part.text)
       .join('\n')
 
+    // Slash invocations are stored as `<command-name>` XML by the CLI. Render
+    // them as a chip plus the arguments instead of raw markup.
+    const invocation = parseCommandInvocation(text)
+
     return (
       <div data-role="user" className="flex w-full justify-end pl-10 sm:pl-20" style={ENTRY}>
-        <div className="max-w-[85%] whitespace-pre-wrap rounded-[var(--radius-window)] bg-field px-3.5 py-2 text-[13px] leading-[1.45] text-ink">
-          {text}
+        <div className="min-w-0 max-w-[85%] whitespace-pre-wrap break-words rounded-[var(--radius-window)] bg-field px-3.5 py-2 text-[13px] leading-[1.45] text-ink [overflow-wrap:anywhere]">
+          {invocation ? (
+            <span className="inline-flex flex-wrap items-center gap-1.5">
+              <CommandChip name={invocation.name} />
+              {invocation.args ? <span>{invocation.args}</span> : null}
+            </span>
+          ) : (
+            text
+          )}
         </div>
       </div>
     )
@@ -42,7 +55,7 @@ export function MessageBubble({
 
   // Agent turns read as a document section: a small label line, then content.
   return (
-    <article data-role="agent" className="flex w-full flex-col gap-2" style={ENTRY}>
+    <article data-role="agent" className="flex min-w-0 w-full flex-col gap-2" style={ENTRY}>
       <header className="flex items-center gap-1.5 text-[12px] leading-[1.3]">
         <span className="font-medium text-ink">OpenClaude</span>
         {showCaret ? <span className="text-ink-3">responding…</span> : null}
@@ -56,9 +69,29 @@ export function MessageBubble({
           return (
             <div
               key={index}
-              className="openclaude-prose text-[13.5px] leading-[1.55] text-ink"
+              className="openclaude-prose min-w-0 break-words text-[13.5px] leading-[1.55] text-ink"
             >
-              <ReactMarkdown>{part.text}</ReactMarkdown>
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  // The agent often names a command as inline code, e.g.
+                  // `` `/commit` ``. Render that token as a chip so it reads
+                  // like the terminal rather than a stray code span.
+                  code({ children, className, ...props }) {
+                    const text = String(children)
+                    if (!className && isCommandText(text)) {
+                      return <CommandChip name={text.trim()} />
+                    }
+                    return (
+                      <code className={className} {...props}>
+                        {children}
+                      </code>
+                    )
+                  },
+                }}
+              >
+                {part.text}
+              </ReactMarkdown>
               {showCaret && index === message.parts.length - 1 ? (
                 <span
                   aria-hidden

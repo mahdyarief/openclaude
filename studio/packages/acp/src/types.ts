@@ -29,6 +29,12 @@ export type PermissionRequest = {
   options: Array<{ optionId: string; name: string; kind: string }>
 }
 
+/** A slash command the agent advertised via `available_commands_update`. */
+export type AvailableCommand = {
+  name: string
+  description: string
+}
+
 export type SessionState = {
   sessionId: string
   cwd: string
@@ -39,6 +45,8 @@ export type SessionState = {
   usage: UsageUpdate | null
   modes: SessionModeState | null
   configOptions: Array<SessionConfigOption>
+  /** slash commands the agent supports, for the composer's `/` menu */
+  commands: AvailableCommand[]
   permissionQueue: PermissionRequest[]
   stopReason: StopReason | null
   streaming: boolean

@@ -8,6 +8,7 @@ import {
   LoadingState,
   PromptBar,
   ProjectRail,
+  ResourceUsageFooter,
   SessionTabs,
 } from '@openclaude-studio/ui'
 import {
@@ -23,6 +24,7 @@ import { useFileContent, useFileTree } from './use-file-tree.js'
 import { groupSessions, useProjectSessions } from './use-projects.js'
 import { useTabs, type Tab } from './use-tabs.js'
 import { useWorkspaceSessions } from './use-workspace-sessions.js'
+import { useMetrics } from './use-metrics.js'
 
 /** The mode selector's entries — derived from the canonical list so adding a
  *  mode to `@openclaude-studio/acp` automatically extends this dropdown. */
@@ -72,6 +74,7 @@ export function Workbench({
     config.token,
     project.path,
   )
+  const { metrics, error: metricsError } = useMetrics(config)
 
   // A file clicked in the explorer opens as a document tab. `openDocument` is
   // keyed on the workspace path so the same relative path in another project
@@ -267,6 +270,7 @@ export function Workbench({
           onSelectFile={openDocument}
         />
       }
+      footer={<ResourceUsageFooter metrics={metrics} error={metricsError} />}
     />
   )
 }
@@ -299,6 +303,7 @@ function SessionPane({
     status,
     error,
     awaiting,
+    loadingHistory,
     sendPrompt,
     cancel,
     ensureSession,
@@ -347,6 +352,7 @@ function SessionPane({
       toolCalls={state.toolCalls}
       streaming={state.streaming}
       awaiting={awaiting}
+      loadingHistory={loadingHistory}
       status={status}
       stopReason={state.stopReason}
     >
@@ -394,6 +400,7 @@ function SessionPane({
           if (isPermissionMode(id)) onPermissionModeChange(id)
         }}
         labels={{ placeholder: disabled ? 'Connecting…' : 'Ask OpenClaude…' }}
+        commands={state.commands}
       />
     </ChatPane>
   )

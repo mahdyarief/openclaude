@@ -41,3 +41,11 @@ temp_reference/
 /build_out.log
 /te_test.log
 /test_*.log
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
+
+# Local agent/OMC session state and scratch — not source.
+.ignore
+.omc/
+studio/.omc/

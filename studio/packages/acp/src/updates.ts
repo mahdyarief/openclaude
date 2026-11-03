@@ -28,6 +28,7 @@ export function emptySession(sessionId: string, cwd: string): SessionState {
     usage: null,
     modes: null,
     configOptions: [],
+    commands: [],
     permissionQueue: [],
     stopReason: null,
     streaming: false,
@@ -158,7 +159,13 @@ function applyUpdate(state: SessionState, update: SessionUpdate): SessionState {
         usage: { used: update.used, size: update.size, cost: update.cost ?? null },
       }
     case 'available_commands_update':
-      return state
+      return {
+        ...state,
+        commands: update.availableCommands.map(command => ({
+          name: command.name,
+          description: command.description,
+        })),
+      }
     case 'current_mode_update':
       return state
     case 'config_option_update':

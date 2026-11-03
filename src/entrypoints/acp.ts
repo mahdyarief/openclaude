@@ -10,6 +10,7 @@ import { runOutsideSdkContext } from '../bootstrap/state.js'
 import { init } from './init.js'
 import { getClaudeCodeMcpConfigs } from '../services/mcp/config.js'
 import type { ScopedMcpServerConfig } from '../services/mcp/types.js'
+import { getCommands } from '../commands.js'
 
 /**
  * Tool permission mode. The default is `bypassPermissions` so the agent can
@@ -179,6 +180,30 @@ export function createAcpServer(
     write({ jsonrpc: '2.0', method, params })
   }
 
+  /**
+   * Tell the client which slash commands this session supports so a remote
+   * composer can offer a `/` menu from the real registry instead of a
+   * hardcoded list. Command discovery is filesystem-backed (skills, plugins,
+   * project commands), so a failure must not break session creation.
+   */
+  const advertiseCommands = async (sessionId: string, cwd: string): Promise<void> => {
+    try {
+      const commands = await getCommands(cwd)
+      notify('session/update', {
+        sessionId,
+        update: {
+          sessionUpdate: 'available_commands_update',
+          availableCommands: commands.map(command => ({
+            name: command.name,
+            description: command.description,
+          })),
+        },
+      })
+    } catch {
+      // Best-effort: the composer simply has no `/` menu this session.
+    }
+  }
+
   const requestPermission = (
     sessionId: string,
     session: SDKSession,
@@ -265,6 +290,9 @@ export function createAcpServer(
       })
       sessions.set(session.sessionId, { cwd, session, active: null })
       if (message.id !== undefined) respond(message.id, { sessionId: session.sessionId })
+      // Advertise after the response so the client has adopted the session
+      // store by the time the command list lands.
+      void advertiseCommands(session.sessionId, cwd)
       return
     }
 
@@ -290,6 +318,7 @@ export function createAcpServer(
       })
       sessions.set(sessionId, { cwd, session, active: null })
       if (message.id !== undefined) respond(message.id, { sessionId })
+      void advertiseCommands(sessionId, cwd)
       return
     }
 

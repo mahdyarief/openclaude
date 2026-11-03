@@ -101,6 +101,25 @@ describe('applySessionUpdate', () => {
     expect(withUsage.messages).toHaveLength(0)
   })
 
+  test('stores the agent-advertised slash commands', () => {
+    const withCommands = applySessionUpdate(
+      base,
+      notification({
+        sessionUpdate: 'available_commands_update',
+        availableCommands: [
+          { name: 'commit', description: 'Create a commit' },
+          { name: 'review:fast', description: 'Quick review' },
+        ],
+      }),
+    )
+
+    expect(withCommands.commands).toEqual([
+      { name: 'commit', description: 'Create a commit' },
+      { name: 'review:fast', description: 'Quick review' },
+    ])
+    expect(withCommands.messages).toHaveLength(0)
+  })
+
   test('latches streaming on the first chunk and leaves it set', () => {
     const streamed = applySessionUpdate(
       base,

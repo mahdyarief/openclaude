@@ -355,7 +355,7 @@ export function ProjectRail({
                               variant="quiet"
                               size="icon"
                               aria-label={`Workspace actions for ${workspace.name}`}
-                              className="size-6 shrink-0 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 data-[state=open]:opacity-100"
+                              className="size-6 shrink-0 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 data-[state=open]:opacity-100"
                             >
                               <MoreHorizontal size={14} />
                             </Button>
