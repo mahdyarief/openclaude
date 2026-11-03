@@ -200,7 +200,8 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
       }
 
       // kind: 'new' — handshake only. No `session/new` happens on mount; the
-      // first `ensureSession()` (triggered by the first prompt) creates it.
+      // first `ensureSession()` (triggered by the first prompt or the `/` menu)
+      // creates it.
       const handshake = await Promise.race([
         connectHandshake({
           url,

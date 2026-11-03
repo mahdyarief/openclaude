@@ -389,7 +389,14 @@ function SessionPane({
       ) : null}
       <PromptBar
         value={draft}
-        onChange={setDraft}
+        onChange={next => {
+          // A new session is created lazily on the first prompt. But the
+          // composer's `/` menu needs the agent's advertised slash commands
+          // (sent right after `session/new`), so kick off session creation the
+          // moment the user types `/` rather than waiting for the send.
+          if (!sessionId && next.startsWith('/')) void ensureSession()
+          setDraft(next)
+        }}
         onSend={submit}
         onCancel={cancel}
         disabled={disabled}
