@@ -170,7 +170,7 @@ export default function PromptBar({
   return (
     <div
       className={cn(
-        "flex w-full flex-col overflow-hidden rounded-[var(--radius-card)] border border-line bg-surface shadow-[var(--shadow-card)]",
+        "flex w-full flex-col rounded-[var(--radius-card)] border border-line bg-surface shadow-[var(--shadow-card)]",
         className,
       )}
     >
@@ -201,7 +201,7 @@ export default function PromptBar({
       <div
         role="presentation"
         onClick={() => inputRef.current?.focus()}
-        className="relative flex cursor-text flex-col gap-2 bg-field p-2.5 transition-[border-color,box-shadow] duration-150 focus-within:bg-surface"
+        className="relative flex cursor-text flex-col gap-2 rounded-b-[var(--radius-card)] bg-field p-2.5 transition-[border-color,box-shadow] duration-150 focus-within:bg-surface"
       >
         {menuOpen ? (
           <div
