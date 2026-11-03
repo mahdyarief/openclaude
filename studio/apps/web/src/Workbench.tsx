@@ -3,6 +3,7 @@ import {
   AppShell,
   Button,
   ChatPane,
+  ConfigDialog,
   DocumentViewer,
   FileExplorer,
   LoadingState,
@@ -309,6 +310,8 @@ function SessionPane({
     ensureSession,
     pendingPermission,
     respondPermission,
+    getConfig,
+    setConfig,
   } = useAgentSession({
     url: config.url,
     token: config.token,
@@ -317,6 +320,7 @@ function SessionPane({
     ...(initialSessionId ? { sessionId: initialSessionId } : {}),
   })
   const [draft, setDraft] = useState('')
+  const [configOpen, setConfigOpen] = useState(false)
 
   useEffect(() => {
     // A failed stored connection falls back to the connect screen automatically.
@@ -355,8 +359,11 @@ function SessionPane({
       loadingHistory={loadingHistory}
       status={status}
       stopReason={state.stopReason}
+      questions={pendingPermission?.questions ?? null}
+      onAnswer={answers => respondPermission('allow', answers)}
+      onDismissQuestions={() => respondPermission(null)}
     >
-      {pendingPermission ? (
+      {pendingPermission && !pendingPermission.questions?.length ? (
         <div
           role="dialog"
           aria-modal="true"
@@ -387,6 +394,12 @@ function SessionPane({
           </div>
         </div>
       ) : null}
+      <ConfigDialog
+        open={configOpen}
+        onOpenChange={setConfigOpen}
+        fetchConfig={getConfig}
+        patchConfig={setConfig}
+      />
       <PromptBar
         value={draft}
         onChange={next => {
@@ -408,6 +421,13 @@ function SessionPane({
         }}
         labels={{ placeholder: disabled ? 'Connecting…' : 'Ask OpenClaude…' }}
         commands={state.commands}
+        onCommandPick={name => {
+          // Interactive commands render terminal UI and cannot run over ACP,
+          // so open the studio's own panel for the ones we implement.
+          if (name === 'config' || name === 'provider' || name === 'model' || name === 'theme') {
+            setConfigOpen(true)
+          }
+        }}
       />
     </ChatPane>
   )

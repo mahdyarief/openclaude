@@ -89,8 +89,51 @@ export type AgentHandshake = {
    * first prompt.
    */
   startSession: (cwd: string, permissionMode?: string) => Promise<ActiveSessionLike>
+  /** Reads model/theme/provider state for the studio's config panels. */
+  fetchConfig: () => Promise<AgentConfigSnapshot>
+  /** Applies a config change and returns the refreshed snapshot. */
+  patchConfig: (patch: AgentConfigPatch) => Promise<AgentConfigSnapshot>
   close: () => void
 }
+
+/**
+ * The agent-side config surface exposed by the custom `openclaude/config` ACP
+ * method. Terminal slash commands (`/model`, `/theme`, `/provider`, `/config`)
+ * render Ink UI and are no-ops over ACP, so the web composer renders these.
+ */
+export type AgentConfigSnapshot = {
+  model: {
+    active: string | null
+    options: Array<{
+      value: string
+      label: string
+      description?: string
+      switchToProfileId?: string
+    }>
+  }
+  theme: {
+    active: string
+    options: string[]
+  }
+  provider: {
+    activeId: string | null
+    profiles: Array<{
+      id: string
+      name: string
+      provider?: string
+      model?: string
+      baseUrl?: string
+    }>
+  }
+}
+
+export type AgentConfigPatch = {
+  model?: string
+  theme?: string
+  provider?: string
+}
+
+const CONFIG_METHOD = 'openclaude/config'
 
 export async function connectHandshake(
   options: Pick<AgentConnectionOptions, 'url' | 'token' | 'onUpdate' | 'onPermission'>,
@@ -131,8 +174,26 @@ export async function connectHandshake(
       const sessionLike: ActiveSessionLike = session
       return sessionLike
     },
+    fetchConfig: () => fetchConfig(connection),
+    patchConfig: patch => patchConfig(connection, patch),
     close: () => connection.close(),
   }
+}
+
+/** Read the config snapshot the studio panels render. */
+export async function fetchConfig(connection: ClientConnection): Promise<AgentConfigSnapshot> {
+  return connection.agent.request(CONFIG_METHOD, {}) as Promise<AgentConfigSnapshot>
+}
+
+/** Apply a config change; the response is the post-write snapshot. */
+export async function patchConfig(
+  connection: ClientConnection,
+  patch: AgentConfigPatch,
+): Promise<AgentConfigSnapshot> {
+  return connection.agent.request(CONFIG_METHOD, {
+    mode: 'set',
+    ...patch,
+  }) as Promise<AgentConfigSnapshot>
 }
 
 export function bridgeSocketUrl(url: string, token: string): string {

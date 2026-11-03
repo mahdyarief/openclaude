@@ -11,6 +11,23 @@ import { init } from './init.js'
 import { getClaudeCodeMcpConfigs } from '../services/mcp/config.js'
 import type { ScopedMcpServerConfig } from '../services/mcp/types.js'
 import { getCommands } from '../commands.js'
+import { ASK_USER_QUESTION_TOOL_NAME } from '../tools/AskUserQuestionTool/prompt.js'
+import { getGlobalConfig, saveGlobalConfig, setProjectModelSetting } from '../utils/config.js'
+import { THEME_SETTINGS } from '../utils/theme.js'
+import {
+  getModelOptions,
+  parseSwitchProfileValue,
+  SWITCH_PROFILE_VALUE_PREFIX,
+} from '../utils/model/modelOptions.js'
+import { getUserSpecifiedModelSetting } from '../utils/model/model.js'
+import {
+  getProviderProfiles,
+  getActiveProviderProfile,
+  setActiveProviderProfile,
+  clearActiveProviderProfile,
+  ANTHROPIC_DEFAULT_PROFILE_ID,
+} from '../utils/providerProfiles.js'
+import { getInitialMainLoopModel, setMainLoopModelOverride } from '../bootstrap/state.js'
 
 /**
  * Tool permission mode. The default is `bypassPermissions` so the agent can
@@ -159,6 +176,18 @@ export function createAcpServer(
     const payload = isRecord(result) ? result : {}
     const outcome = isRecord(payload.outcome) ? payload.outcome : {}
     const optionId = typeof outcome.optionId === 'string' ? outcome.optionId : null
+    // `AskUserQuestion` answers ride on `_meta.answers` of the selected outcome,
+    // keyed by question text. Forward them as `updatedInput` so the tool sees
+    // the user's choices instead of an empty prompt.
+    const meta = isRecord(outcome._meta) ? outcome._meta : {}
+    const answers = isRecord(meta.answers) ? meta.answers : null
+    if (outcome.outcome === 'selected' && answers) {
+      return {
+        behavior: 'allow',
+        decisionClassification: 'user_temporary',
+        updatedInput: { answers },
+      }
+    }
     if (outcome.outcome === 'selected' && optionId !== null && optionId.startsWith('allow')) {
       return {
         behavior: 'allow',
@@ -196,6 +225,13 @@ export function createAcpServer(
           availableCommands: commands.map(command => ({
             name: command.name,
             description: command.description,
+            // `local-jsx` commands render terminal UI and are no-ops over ACP.
+            // Expose the kind so a remote composer can render its own panel
+            // instead of sending a prompt that would produce no output.
+            _meta: {
+              type: command.type,
+              ...(command.argumentHint ? { argumentHint: command.argumentHint } : {}),
+            },
           })),
         },
       })
@@ -214,6 +250,21 @@ export function createAcpServer(
       session.respondToPermission(message.tool_use_id, resolvePermission(result))
     })
 
+    const inputs = message.input ?? {}
+    // `AskUserQuestion` is interactive: the client renders the questions and
+    // returns the answers through `updatedInput`, so forward them as a
+    // permission request instead of a plain allow/deny prompt.
+    const isAskUserQuestion = message.tool_name === ASK_USER_QUESTION_TOOL_NAME
+    const questions = isAskUserQuestion
+      ? (inputs.questions as Array<Record<string, unknown>> | undefined)
+      : undefined
+    const options = isAskUserQuestion
+      ? []
+      : [
+          { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+          { optionId: 'reject', name: 'Reject', kind: 'reject_once' },
+        ]
+
     write({
       jsonrpc: '2.0',
       id,
@@ -226,10 +277,11 @@ export function createAcpServer(
           kind: 'other',
           rawInput: message.input,
         },
-        options: [
-          { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
-          { optionId: 'reject', name: 'Reject', kind: 'reject_once' },
-        ],
+        options,
+        // ACP's schema only allows `_meta` for extensions; a top-level
+        // `questions` key is stripped by the SDK's Zod parser before the
+        // client ever sees it.
+        ...(questions ? { _meta: { questions } } : {}),
       },
     })
   }
@@ -367,7 +419,110 @@ export function createAcpServer(
       return
     }
 
+    if (message.method === 'openclaude/config') {
+      const params = isRecord(message.params) ? message.params : {}
+      const mode = typeof params.mode === 'string' ? params.mode : 'get'
+      if (mode === 'set') {
+        if (message.id === undefined) return
+        respond(message.id, await applyConfigPatch(params))
+        return
+      }
+      if (message.id === undefined) return
+      respond(message.id, readConfigSnapshot())
+      return
+    }
+
     if (message.id !== undefined) fail(message.id, -32601, `Method not found: ${message.method}`)
+  }
+
+  /**
+   * A serializable read of the config surface the web composer renders panels
+   * for: model options, theme settings, and provider profiles. Local-jsx slash
+   * commands (`/model`, `/theme`, `/provider`, `/config`) render terminal UI and
+   * are no-ops over ACP, so the remote composer instead fetches this snapshot
+   * and renders its own panel before applying changes via `mode: 'set'`.
+   */
+  function readConfigSnapshot(): unknown {
+    const config = getGlobalConfig()
+    const options = getModelOptions()
+    const activeModel = getUserSpecifiedModelSetting() ?? getInitialMainLoopModel()
+    const profiles = getProviderProfiles(config).map(profile => ({
+      id: profile.id,
+      name: profile.name,
+      provider: profile.provider,
+      model: profile.model,
+      baseUrl: profile.baseUrl,
+    }))
+    const activeProfile = getActiveProviderProfile()
+
+    return {
+      model: {
+        active: activeModel ?? null,
+        options: options.map(option => ({
+          value: option.value,
+          label: option.label,
+          description: option.description,
+          ...(option.switchToProfileId
+            ? { switchToProfileId: option.switchToProfileId }
+            : {}),
+        })),
+      },
+      theme: {
+        active: config.theme,
+        options: [...THEME_SETTINGS],
+      },
+      provider: {
+        activeId: activeProfile?.id ?? null,
+        profiles,
+      },
+    }
+  }
+
+  /**
+   * Apply a config patch sent from the web composer. Each field is optional;
+   * absent fields are left untouched. Returns the post-write snapshot so the
+   * composer can refresh without a second round trip.
+   */
+  async function applyConfigPatch(params: Record<string, unknown>): Promise<unknown> {
+    // Model — a plain model alias/ID, or a `__switch_profile__:`-encoded value
+    // that also activates a provider profile before switching models.
+    if (typeof params.model === 'string') {
+      const model = params.model
+      const switchProfile = model.startsWith(SWITCH_PROFILE_VALUE_PREFIX)
+        ? parseSwitchProfileValue(model)
+        : undefined
+      if (switchProfile) {
+        setActiveProviderProfile(switchProfile.profileId)
+        applyModelSetting(switchProfile.model)
+      } else {
+        applyModelSetting(model === 'default' ? null : model)
+      }
+    }
+
+    // Theme — stored directly on the global config.
+    if (typeof params.theme === 'string' && (THEME_SETTINGS as readonly string[]).includes(params.theme)) {
+      const setting = params.theme as (typeof THEME_SETTINGS)[number]
+      saveGlobalConfig(current => (current.theme === setting ? current : { ...current, theme: setting }))
+    }
+
+    // Provider profile — activate an existing profile, or clear to Anthropic
+    // default when the value resolves to the sentinel/no selection.
+    if (typeof params.provider === 'string') {
+      const id = params.provider
+      if (id === '' || id === ANTHROPIC_DEFAULT_PROFILE_ID) {
+        clearActiveProviderProfile()
+      } else {
+        setActiveProviderProfile(id)
+      }
+    }
+
+    return readConfigSnapshot()
+  }
+
+  /** Persist a main-loop model choice the same way the `/model` command does. */
+  function applyModelSetting(model: string | null): void {
+    setProjectModelSetting(model ?? undefined)
+    setMainLoopModelOverride(model)
   }
 
   const rl = createInterface({ input, crlfDelay: Infinity })

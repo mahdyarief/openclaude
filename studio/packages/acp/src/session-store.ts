@@ -24,7 +24,10 @@ export function createSessionStore(
     enqueuePermission: request => {
       store.setState(state => ({
         ...state,
-        permissionQueue: [...state.permissionQueue, request],
+        permissionQueue: [
+          ...state.permissionQueue,
+          { ...request, questions: request.questions ?? null },
+        ],
       }))
     },
     resolvePermission: requestId => {

@@ -22,17 +22,38 @@ export type ConversationMessage = {
   parts: MessagePart[]
 }
 
+export type PermissionOption = {
+  optionId: string
+  name: string
+  kind: string
+}
+
+/** An interactive question the agent asked via the `AskUserQuestion` tool. */
+export type AgentQuestion = {
+  /** the question text, also used as the answer key */
+  question: string
+  /** whether the user may pick more than one option */
+  multiSelect: boolean
+  /** option labels in display order */
+  options: Array<{ label: string }>
+}
+
 export type PermissionRequest = {
   requestId: number | string
   sessionId: string
   toolCall: ToolCallUpdate
-  options: Array<{ optionId: string; name: string; kind: string }>
+  options: PermissionOption[]
+  /** present when the tool is `AskUserQuestion`; drives the ApprovalCard UI */
+  questions?: AgentQuestion[] | null
 }
 
 /** A slash command the agent advertised via `available_commands_update`. */
 export type AvailableCommand = {
   name: string
   description: string
+  /** Agent-side command kind; `local-jsx` commands need a web-rendered panel. */
+  type?: string
+  argumentHint?: string
 }
 
 export type SessionState = {

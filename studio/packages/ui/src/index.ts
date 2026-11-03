@@ -1,6 +1,7 @@
 export * from './shell/ProjectRail.js'
 export * from './shell/SessionTabs.js'
 export * from './shell/ChatPane.js'
+export * from './shell/ConfigDialog.js'
 export * from './shell/MessageList.js'
 export * from './shell/MessageBubble.js'
 export * from './shell/CommandChip.js'

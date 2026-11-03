@@ -120,6 +120,35 @@ describe('applySessionUpdate', () => {
     expect(withCommands.messages).toHaveLength(0)
   })
 
+  test('reads command type and argument hint from `_meta`', () => {
+    const withCommands = applySessionUpdate(
+      base,
+      notification({
+        sessionUpdate: 'available_commands_update',
+        availableCommands: [
+          {
+            name: 'model',
+            description: 'Set the model',
+            _meta: { type: 'local-jsx', argumentHint: '[model-id]' },
+          },
+          {
+            name: 'commit',
+            description: 'Create a commit',
+            _meta: { type: 'prompt' },
+          },
+          // A bridge that omits `_meta` must map cleanly to a prompt command.
+          { name: 'plain', description: 'No meta' },
+        ],
+      }),
+    )
+
+    expect(withCommands.commands).toEqual([
+      { name: 'model', description: 'Set the model', type: 'local-jsx', argumentHint: '[model-id]' },
+      { name: 'commit', description: 'Create a commit', type: 'prompt' },
+      { name: 'plain', description: 'No meta' },
+    ])
+  })
+
   test('latches streaming on the first chunk and leaves it set', () => {
     const streamed = applySessionUpdate(
       base,

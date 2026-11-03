@@ -4,9 +4,13 @@ import {
   createAgentConnection,
   createSessionStore,
   emptySession,
+  fetchConfig,
   fetchSessionHistory,
+  patchConfig,
   type AgentConnectionHandle,
   type AgentHandshake,
+  type AgentConfigPatch,
+  type AgentConfigSnapshot,
   type ConnectionStatus,
   type PermissionRequest,
   type RequestPermissionRequest,
@@ -15,6 +19,7 @@ import {
   type SessionState,
   type SessionStoreApi,
 } from '@openclaude-studio/acp'
+import { buildPermissionOutcome } from './permissions-outcome.js'
 
 export type AgentSessionOptions = {
   url: string
@@ -46,10 +51,19 @@ type AgentSession = {
   cancel: () => void
   ensureSession: () => Promise<string | null>
   pendingPermission: PermissionRequest | null
-  respondPermission: (optionId: string | null) => void
+  /** resolve the pending permission; pass answers for `AskUserQuestion` */
+  respondPermission: (optionId: string | null, answers?: Record<string, string> | null) => void
+  /** Reads the agent's model/theme/provider state for the config panel. */
+  getConfig: () => Promise<AgentConfigSnapshot>
+  /** Applies a config patch and resolves with the refreshed snapshot. */
+  setConfig: (patch: AgentConfigPatch) => Promise<AgentConfigSnapshot>
 }
 
 const HANDSHAKE_TIMEOUT_MS = 10000
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
 
 export function useAgentSession(options: AgentSessionOptions): AgentSession {
   const { url, token, cwd, sessionId, permissionMode } = options
@@ -104,6 +118,34 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
 
   const requestPermission = useCallback(async (request: RequestPermissionRequest) => {
     const store = storeRef.current
+    // The agent attaches `questions` for `AskUserQuestion`; the ACP type does
+    // not model the extension, so read it off the raw params.
+    const rawMeta = (request as unknown as { _meta?: unknown })._meta
+    const rawQuestions = isRecord(rawMeta)
+      ? (rawMeta as Record<string, unknown>).questions
+      : undefined
+    const questions = Array.isArray(rawQuestions)
+      ? rawQuestions
+          .filter(
+            (entry): entry is Record<string, unknown> =>
+              typeof entry === 'object' && entry !== null,
+          )
+          .map(entry => ({
+            question: typeof entry.question === 'string' ? entry.question : '',
+            multiSelect: entry.multiSelect === true,
+            options: Array.isArray(entry.options)
+              ? entry.options
+                  .filter(
+                    (option): option is Record<string, unknown> =>
+                      typeof option === 'object' && option !== null,
+                  )
+                  .map(option => ({
+                    label: typeof option.label === 'string' ? option.label : '',
+                  }))
+              : [],
+          }))
+          .filter(entry => entry.question.length > 0)
+      : null
     const permission: PermissionRequest = {
       requestId: request.toolCall.toolCallId,
       sessionId: request.sessionId,
@@ -113,6 +155,7 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
         name: option.name,
         kind: option.kind,
       })),
+      ...(questions && questions.length > 0 ? { questions } : {}),
     }
     store?.enqueuePermission(permission)
     if (store) setState(store.getState())
@@ -380,17 +423,34 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
     })
   }, [])
 
-  const respondPermission = useCallback((optionId: string | null) => {
-    const resolve = permissionResolver.current
-    if (!resolve) return
-    permissionResolver.current = null
-    setPendingPermission(null)
-    resolve(
-      optionId
-        ? { outcome: { outcome: 'selected', optionId } }
-        : { outcome: { outcome: 'cancelled' } },
-    )
+  // A loaded session only keeps a handle (no handshake), while a fresh session
+  // keeps both. Prefer the handshake and fall back to the handle's connection.
+  const getConfig = useCallback(async () => {
+    const handshake = handshakeRef.current
+    if (handshake) return handshake.fetchConfig()
+    const handle = handleRef.current
+    if (handle) return fetchConfig(handle.connection)
+    throw new Error('Not connected')
   }, [])
+
+  const setConfig = useCallback(async (patch: AgentConfigPatch) => {
+    const handshake = handshakeRef.current
+    if (handshake) return handshake.patchConfig(patch)
+    const handle = handleRef.current
+    if (handle) return patchConfig(handle.connection, patch)
+    throw new Error('Not connected')
+  }, [])
+
+  const respondPermission = useCallback(
+    (optionId: string | null, answers?: Record<string, string> | null) => {
+      const resolve = permissionResolver.current
+      if (!resolve) return
+      permissionResolver.current = null
+      setPendingPermission(null)
+      resolve(buildPermissionOutcome(optionId, answers))
+    },
+    [],
+  )
 
   return {
     state,
@@ -404,5 +464,7 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
     ensureSession,
     pendingPermission,
     respondPermission,
+    getConfig,
+    setConfig,
   }
 }

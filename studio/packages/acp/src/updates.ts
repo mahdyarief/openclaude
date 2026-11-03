@@ -5,10 +5,15 @@ import type {
   ToolCallUpdate,
 } from '@agentclientprotocol/sdk'
 import type {
+  AvailableCommand,
   ConversationMessage,
   MessagePart,
   SessionState,
 } from './types.js'
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
 
 let messageCounter = 0
 
@@ -161,10 +166,18 @@ function applyUpdate(state: SessionState, update: SessionUpdate): SessionState {
     case 'available_commands_update':
       return {
         ...state,
-        commands: update.availableCommands.map(command => ({
-          name: command.name,
-          description: command.description,
-        })),
+        commands: update.availableCommands.map((command): AvailableCommand => {
+          const meta = isRecord(command._meta) ? command._meta : undefined
+          const type = typeof meta?.type === 'string' ? meta.type : undefined
+          const argumentHint =
+            typeof meta?.argumentHint === 'string' ? meta.argumentHint : undefined
+          return {
+            name: command.name,
+            description: command.description,
+            ...(type !== undefined ? { type } : {}),
+            ...(argumentHint !== undefined ? { argumentHint } : {}),
+          }
+        }),
       }
     case 'current_mode_update':
       return state

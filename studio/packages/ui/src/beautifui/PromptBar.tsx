@@ -79,7 +79,14 @@ export type PromptBarProps = {
   labels?: Partial<PromptBarLabels>;
   className?: string;
   /** slash commands advertised by the agent, powering the `/` menu */
-  commands?: Array<{ name: string; description: string }>;
+  commands?: Array<{ name: string; description: string; type?: string }>;
+  /**
+   * Fired when the user selects a slash command that the agent cannot run over
+   * ACP (a `local-jsx` command renders terminal UI and is a no-op remotely).
+   * The parent opens a web-rendered panel instead of inserting the command
+   * text. When omitted, every command inserts its text as before.
+   */
+  onCommandPick?: (name: string) => void;
 };
 
 // The last `/word` being typed at the end of the draft, if any. Mirrors the
@@ -107,6 +114,7 @@ export default function PromptBar({
   labels,
   className,
   commands = [],
+  onCommandPick,
 }: PromptBarProps) {
   const l = { ...DEFAULT_LABELS, ...labels };
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -130,6 +138,14 @@ export default function PromptBar({
 
   const pick = (name: string) => {
     if (!slash) return;
+    const command = commands.find(entry => entry.name === name);
+    // `local-jsx` commands only render terminal UI, so a prompt would resolve
+    // with no output. Hand them to the parent, which opens a web panel.
+    if (command?.type === "local-jsx" && onCommandPick) {
+      onChange(value.slice(0, slash.start));
+      onCommandPick(name);
+      return;
+    }
     const before = value.slice(0, slash.start);
     onChange(`${before}/${name} `);
     inputRef.current?.focus();

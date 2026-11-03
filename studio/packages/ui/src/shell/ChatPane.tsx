@@ -1,11 +1,12 @@
 import type { ReactNode } from 'react'
 import type {
+  AgentQuestion,
   ConnectionStatus,
   ConversationMessage,
   StopReason,
   ToolCall,
 } from '@openclaude-studio/acp'
-import { LoadingState } from '../beautifui/index.js'
+import { LoadingState, QuestionPanel } from '../beautifui/index.js'
 import { cn } from '../lib/cn.js'
 import { Skeleton } from '../shadcn/skeleton.js'
 import { MessageList } from './MessageList.js'
@@ -20,6 +21,12 @@ export type ChatPaneProps = {
   loadingHistory?: boolean
   status: ConnectionStatus
   stopReason: StopReason | null
+  /** pending interactive questions from the agent (`AskUserQuestion`) */
+  questions?: AgentQuestion[] | null
+  /** answers the user collected from the questions */
+  onAnswer?: (answers: Record<string, string>) => void
+  /** dismiss the pending questions without answering */
+  onDismissQuestions?: () => void
   /** composer pinned to the bottom */
   children?: ReactNode
 }
@@ -40,6 +47,9 @@ export function ChatPane({
   loadingHistory,
   status,
   stopReason,
+  questions,
+  onAnswer,
+  onDismissQuestions,
   children,
 }: ChatPaneProps) {
   const stopLabel = stopReason ? (STOP_LABELS[stopReason] ?? stopReason) : null
@@ -92,6 +102,15 @@ export function ChatPane({
           <p className="mx-auto w-full max-w-3xl px-3 text-[11.5px] text-ink-3 sm:px-6">
             Stopped: {stopLabel}
           </p>
+        ) : null}
+        {questions && questions.length > 0 ? (
+          <div className="mx-auto w-full max-w-3xl px-3 pb-3 sm:px-6">
+            <QuestionPanel
+              questions={questions}
+              onSubmit={answers => onAnswer?.(answers)}
+              onCancel={onDismissQuestions}
+            />
+          </div>
         ) : null}
         <div className={cn('mx-auto w-full max-w-3xl px-3 pb-3 pt-1 sm:px-6')}>{children}</div>
       </div>
