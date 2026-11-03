@@ -57,8 +57,10 @@ type JsonRpcId = string | number | null
 type JsonRpcRequest = {
   jsonrpc: '2.0'
   id?: JsonRpcId
-  method: string
+  method?: string
   params?: Record<string, unknown>
+  /** present on client responses to our requests (e.g. permission prompts) */
+  result?: unknown
 }
 type JsonRpcResponse = {
   jsonrpc: '2.0'
@@ -211,7 +213,10 @@ export function createAcpServer(
     if (message.id !== undefined && pendingRequests.has(message.id)) {
       const resolve = pendingRequests.get(message.id)!
       pendingRequests.delete(message.id)
-      resolve(message.params ?? {})
+      // A JSON-RPC *response* (what the client sends when answering a
+      // permission request) carries its payload in `result`, not `params`.
+      // Fall back to `params` so a malformed response never crashes the loop.
+      resolve(message.result ?? message.params ?? {})
       return
     }
 
