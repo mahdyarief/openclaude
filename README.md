@@ -165,6 +165,26 @@ Inside OpenClaude:
 
 > **Note:** OpenClaude does not automatically load project `.env` files. We recommend using the `/provider` command for setup, which saves provider profiles and credentials in `.openclaude-profile.json`. If you prefer environment variables, export them explicitly or run `openclaude --provider-env-file .env` for provider/setup variables. Export runtime/debug knobs from your shell or launcher.
 
+### Studio (web)
+
+`openclaude studio` serves OpenClaude in the browser. It launches the ACP bridge
+and the Studio web app in a single process and auto-opens your browser with the
+bridge URL pre-filled, so the web client connects immediately with no setup
+screen.
+
+```bash
+openclaude studio           # serve on 127.0.0.1:8768 and open the browser
+openclaude studio --no-open # serve without opening a browser
+openclaude studio --host 0.0.0.0 --web-port 9000 --bridge-port 9001
+```
+
+The bridge runs tokenless (no bearer token) by default — intended for same-machine,
+single-user use on a trusted network only. Do **not** bind the public internet
+without putting it behind authentication. Useful flags: `--host`, `--web-port`,
+`--bridge-port`, `--no-open`, and env vars `STUDIO_HOST`, `STUDIO_WEB_PORT`,
+`STUDIO_BRIDGE_PORT`, `STUDIO_OPEN` (`0` to disable auto-open). For a hardened
+multi-device setup see `studio/deploy/README.md`.
+
 ### Resume or fork a conversation
 
 Resume an existing conversation by session ID, or continue the most recent

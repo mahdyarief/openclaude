@@ -72,7 +72,7 @@ export function ResourceUsageFooter({ metrics, error, className }: ResourceUsage
     return (
       <footer
         className={[
-          'flex h-7 shrink-0 items-center gap-2 border-t border-line bg-canvas px-2 text-[11px] text-ink-2',
+          'flex min-h-7 flex-wrap items-center gap-x-2 gap-y-1 border-t border-line bg-canvas px-2 py-1 text-[11px] text-ink-2',
           className,
         ].join(' ')}
       >
@@ -90,13 +90,13 @@ export function ResourceUsageFooter({ metrics, error, className }: ResourceUsage
   return (
     <footer
       className={[
-        'flex h-7 shrink-0 items-center gap-2 border-t border-line bg-canvas px-2 text-[11px] text-ink-2',
+        'flex min-h-7 flex-wrap items-center gap-x-2 gap-y-1 border-t border-line bg-canvas px-2 py-1 text-[11px] text-ink-2',
         className,
       ].join(' ')}
     >
       <Badge variant="outline">openclaude</Badge>
 
-      <Separator orientation="vertical" className="h-4" />
+      <Separator orientation="vertical" className="hidden h-4 md:block" />
 
       <span className="flex items-center gap-1">
         CPU
@@ -110,19 +110,19 @@ export function ResourceUsageFooter({ metrics, error, className }: ResourceUsage
         </Badge>
       </span>
 
-      <span className="flex items-center gap-1">
+      <span className="hidden items-center gap-1 sm:flex">
         LOAD
         <Badge variant="default">{metrics.load1.toFixed(2)}</Badge>
       </span>
 
-      <Separator orientation="vertical" className="h-4" />
+      <Separator orientation="vertical" className="hidden h-4 md:block" />
 
-      <span className="flex items-center gap-1">
+      <span className="hidden items-center gap-1 md:flex">
         SESSIONS
         <Badge variant="accent">{metrics.activeSessions}</Badge>
       </span>
 
-      <span className="flex items-center gap-1">
+      <span className="hidden items-center gap-1 md:flex">
         UP
         <Badge variant="default">{formatDuration(metrics.bridgeUptimeSeconds)}</Badge>
       </span>

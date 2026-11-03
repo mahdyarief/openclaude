@@ -8,9 +8,9 @@
  * - src/ path aliases
  */
 
-import { existsSync, readFileSync } from 'fs'
+import { cpSync, existsSync, readFileSync, rmSync } from 'fs'
 import { createRequire } from 'module'
-import { dirname, join } from 'path'
+import { dirname, join, resolve } from 'path'
 import { noTelemetryPlugin } from './no-telemetry-plugin'
 import { CLI_EXTERNALS, SDK_EXTERNALS } from './externals.js'
 import { canonicalStub, collectBundleStubs } from './stubMarkerGuard.js'
@@ -1084,6 +1084,100 @@ if (!acpWebResult.success) {
 
 } finally {
   console.log(`  🔄 feature-flags: transformed ${featureFlagTransformedFiles.size} files during bundling`)
+}
+
+// ── Studio Web Bundle ──────────────────────────────────────────────────────
+// `openclaude studio` serves the React SPA from dist/studio-web and runs the
+// ACP bridge in the same process. Both artifacts are produced here so the
+// published package works without the studio/ source tree or its node_modules:
+//   - dist/studio-server.mjs: server + bridge + runtime deps inlined
+//   - dist/studio-web/: the Vite SPA build
+const studioRoot = resolve(import.meta.dir, '..', 'studio')
+
+if (!existsSync(resolve(studioRoot, 'server.ts'))) {
+  console.log('Studio sources not found; skipping studio bundle.')
+} else {
+  console.log('Building Studio...')
+
+  const runPnpm = (args: string[]): boolean => {
+    for (const cmd of ['corepack', 'pnpm']) {
+      const argv = cmd === 'corepack' ? ['corepack', 'pnpm', ...args] : ['pnpm', ...args]
+      const result = Bun.spawnSync(argv, {
+        cwd: studioRoot,
+        stdio: ['ignore', 'inherit', 'inherit'],
+        env: { ...process.env, COREPACK_ENABLE_DOWNLOAD_PROMPT: '0' },
+      })
+      if (result.exitCode === 0) return true
+      // `corepack` may be absent (older Node or a stripped runtime); fall back
+      // to a global pnpm. If that also fails, surface the original error.
+      if (cmd === 'pnpm') return false
+    }
+    return false
+  }
+
+  if (!existsSync(resolve(studioRoot, 'node_modules'))) {
+    console.log('Installing Studio dependencies (pnpm)...')
+    if (!runPnpm(['install', '--frozen-lockfile'])) {
+      console.error(
+        'Studio dependency install failed. Install pnpm (or enable corepack) and run `pnpm -C studio install` first.',
+      )
+      process.exitCode = 1
+    }
+  }
+
+  if (process.exitCode !== 1) {
+    if (!runPnpm(['-r', 'build'])) {
+      console.error('Studio build failed.')
+      process.exitCode = 1
+    } else {
+      const studioResult = await Bun.build({
+        entrypoints: [resolve(studioRoot, 'server.ts')],
+        outdir: './dist',
+        target: 'node',
+        format: 'esm',
+        splitting: false,
+        sourcemap: 'external',
+        minify: false,
+        naming: 'studio-server.mjs',
+        define: { 'process.env.NODE_ENV': '"production"' },
+        plugins: [
+          {
+            name: 'studio-alias',
+            setup(build) {
+              // The studio packages are pnpm workspace members that are not
+              // resolvable from this package's node_modules. Point their
+              // specifiers at the compiled output instead.
+              build.onResolve({ filter: /^@openclaude-studio\// }, (args) => ({
+                path: resolve(
+                  studioRoot,
+                  'packages',
+                  args.path.replace('@openclaude-studio/', ''),
+                  'dist/index.js',
+                ),
+              }))
+            },
+          },
+        ],
+      })
+
+      if (!studioResult.success) {
+        console.error('Studio server bundle failed:')
+        for (const log of studioResult.logs) console.error(log)
+        process.exitCode = 1
+      } else {
+        const webDist = resolve(studioRoot, 'apps', 'web', 'dist')
+        const outWeb = resolve(import.meta.dir, '..', 'dist', 'studio-web')
+        if (!existsSync(resolve(webDist, 'index.html'))) {
+          console.error(`Studio web build missing: ${webDist}/index.html`)
+          process.exitCode = 1
+        } else {
+          rmSync(outWeb, { recursive: true, force: true })
+          cpSync(webDist, outWeb, { recursive: true })
+          console.log('✓ Built Studio → dist/studio-server.mjs + dist/studio-web/')
+        }
+      }
+    }
+  }
 }
 
 // ── Validate SDK bundle for React/Ink leakage ──────────────────────────────

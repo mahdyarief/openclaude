@@ -175,8 +175,20 @@ export function AppShell({
         </Sheet>
 
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <div className="flex h-9 shrink-0 items-center justify-between border-b border-line px-1">
+          <div className="flex h-9 shrink-0 items-center gap-1 border-b border-line px-1">
             {railToggle}
+            <span className="flex min-w-0 items-baseline gap-1.5">
+              <span className="truncate text-[13px] font-semibold tracking-tight text-ink">
+                OpenClaude
+              </span>
+              <span className="hidden text-[11px] font-medium tracking-wide text-ink-3 sm:inline">
+                Studio
+              </span>
+            </span>
+            <span className="ml-auto" aria-hidden />
+            {showThemeSwitcher ? (
+              <ThemeToggle dark={dark} onToggle={() => setDark((v) => !v)} />
+            ) : null}
             {explorerToggle}
           </div>
           {tabs ? <div className="shrink-0">{tabs}</div> : null}
@@ -225,9 +237,6 @@ export function AppShell({
         >
           <div className="flex h-9 shrink-0 items-center justify-between border-b border-line px-1">
             {railToggle}
-            {showThemeSwitcher ? (
-              <ThemeToggle dark={dark} onToggle={() => setDark((v) => !v)} />
-            ) : null}
           </div>
           <div className="min-h-0 flex-1 overflow-hidden">{rail}</div>
         </ResizablePanel>
@@ -236,8 +245,16 @@ export function AppShell({
 
         <ResizablePanel id="main" className="flex min-h-0 flex-col">
           <div className="flex h-9 shrink-0 items-center justify-between border-b border-line px-1">
-            <div className="flex items-center gap-0.5">
+            <div className="flex min-w-0 items-center gap-1.5">
               {!railOpen ? railToggle : null}
+              <span className="flex min-w-0 items-baseline gap-1.5">
+                <span className="truncate text-[13px] font-semibold tracking-tight text-ink">
+                  OpenClaude
+                </span>
+                <span className="hidden text-[11px] font-medium tracking-wide text-ink-3 sm:inline">
+                  Studio
+                </span>
+              </span>
             </div>
             <div className="flex items-center gap-0.5">
               {showThemeSwitcher ? (
