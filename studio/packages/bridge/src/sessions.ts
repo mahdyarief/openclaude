@@ -191,9 +191,37 @@ function parseSessionHistory(content: string): ReplayedMessage[] {
 }
 
 export async function getSessionHistory(root: string, cwd: string, sessionId: string): Promise<ReplayedMessage[]> {
-  const file = join(root, sanitizeCwd(cwd), `${sessionId}.jsonl`)
+  const fileName = `${sessionId}.jsonl`
+  // The client only knows the session id and the cwd it guesses from the
+  // restored tab; that guess can be wrong early in load, and `sanitizeCwd` is a
+  // lossy mapping ('-' swallows real hyphens in a path). Rather than trust the
+  // directory derived from `cwd`, scan every project dir and match the session
+  // that actually recorded this `cwd` (each JSONL stores its `cwd`). This is why
+  // a freshly opened session no longer renders blank until a manual refresh.
+  let directHit: string | null = null
+  for (const entry of await safeReaddir(root)) {
+    if (!entry.isDirectory()) continue
+    const candidate = join(root, entry.name, fileName)
+    try {
+      await stat(candidate)
+    } catch {
+      continue
+    }
+    if (entry.name === sanitizeCwd(cwd)) {
+      directHit = candidate
+      break
+    }
+    const recovered = await recoverCwd(join(root, entry.name))
+    if (recovered === cwd) {
+      directHit = candidate
+      break
+    }
+    if (directHit === null) directHit = candidate
+  }
+
+  if (directHit === null) return []
   try {
-    const content = await readFile(file, 'utf8')
+    const content = await readFile(directHit, 'utf8')
     return parseSessionHistory(content)
   } catch {
     return []

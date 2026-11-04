@@ -148,6 +148,14 @@ export function Workbench({
   // opening a session) can still add its tab without re-opening ones we have.
   const restoredRef = useRef(new Set<string>())
   useEffect(() => {
+    // The session listing per workspace may still be in flight when the server
+    // state arrives. Opening a tab before it finishes guesses `cwd` from the
+    // active project and the transcript loads from the wrong directory — the
+    // "blank until refresh" bug. Wait until every listing has settled, then
+    // resolve id → cwd/title from the summaries.
+    const entries = Object.values(byPath)
+    const listingsReady = entries.length > 0 && entries.every(entry => !entry.loading)
+    if (!listingsReady) return
     const openSet = new Set(openIds)
     for (const id of openSessions) {
       if (openSet.has(id) || restoredRef.current.has(id)) continue
@@ -165,7 +173,7 @@ export function Workbench({
       openTab({ tabId: id, kind: 'session', sessionId: id, title, cwd })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [openSessions])
+  }, [openSessions, byPath])
 
   const workspaces = workspaceProjects.map(project => {
     const entry = byPath[project.path]

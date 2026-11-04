@@ -17,7 +17,7 @@ beforeEach(() => {
   mkdirSync(project, { recursive: true })
   writeFileSync(
     join(project, 's1.jsonl'),
-    JSON.stringify({ type: 'user', message: { content: [{ type: 'text', text: 'first task' }] } }) + '\n',
+    JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'first task' }] } }) + '\n',
   )
   process.env.HOME = home
   process.env.USERPROFILE = home
@@ -133,5 +133,37 @@ describe('GET /sessions', () => {
     expect(body.sessions.map(s => s.id)).toEqual(['s1'])
     expect(body.sessions[0]?.title).toBe('first task')
     expect(body.sessions[0]?.messageCount).toBe(1)
+  })
+})
+
+describe('GET /session-history', () => {
+  it('finds a session by id even when the queried cwd does not match', async () => {
+    const bridge = await startBridge()
+    closer = bridge.close
+
+    // The session physically lives under `-home-dy-code-app`, but the client
+    // may ask with a different cwd guess during tab restore (sanitizeCwd is
+    // lossy). History must still be found by id.
+    const res = await fetch(
+      `${httpUrl(bridge.url)}/session-history?cwd=${encodeURIComponent('/some/other/dir')}&id=${encodeURIComponent('s1')}&token=${encodeURIComponent(bridge.token)}`,
+    )
+
+    expect(res.status).toBe(200)
+    const body = await res.json() as { messages: Array<{ parts: Array<{ kind: string; text: string }> }> }
+    expect(body.messages.length).toBeGreaterThan(0)
+    expect(body.messages[0]?.parts[0]?.text).toBe('first task')
+  })
+
+  it('returns an empty list for an unknown session id', async () => {
+    const bridge = await startBridge()
+    closer = bridge.close
+
+    const res = await fetch(
+      `${httpUrl(bridge.url)}/session-history?cwd=${encodeURIComponent('/home/dy/code/app')}&id=${encodeURIComponent('nope')}&token=${encodeURIComponent(bridge.token)}`,
+    )
+
+    expect(res.status).toBe(200)
+    const body = await res.json() as { messages: unknown[] }
+    expect(body.messages).toEqual([])
   })
 })

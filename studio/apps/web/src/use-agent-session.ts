@@ -231,15 +231,27 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
         // from the bridge and seed the store before adopting it.
         setLoadingHistory(true)
         try {
-          const history = await fetchSessionHistory(url, token, cwd, mode.sessionId)
+          // The bridge resolves session history from the session id across
+          // every project dir, but the first read can still race a cold bridge
+          // (a just-restored tab that opened before `byPath` finished loading).
+          // Retry once before giving up so the transcript does not render blank.
+          let history = await fetchSessionHistory(url, token, cwd, mode.sessionId)
+          if (history.length === 0) {
+            await new Promise(resolve => setTimeout(resolve, 350))
+            if (nonce === connectNonce.current) {
+              history = await fetchSessionHistory(url, token, cwd, mode.sessionId)
+            }
+          }
           if (nonce === connectNonce.current && history.length > 0) {
             store.setState(state => ({ ...state, messages: history }))
           }
-        } catch {
+        } catch (cause) {
           // History is a nicety; a missing/unreadable file must not block the
           // live session from becoming usable.
+          if (cause instanceof Error) console.warn('session history load failed:', cause.message)
         }
         if (nonce !== connectNonce.current) {
+          setLoadingHistory(false)
           handle.disconnect()
           return
         }
