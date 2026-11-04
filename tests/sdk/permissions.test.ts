@@ -598,6 +598,39 @@ describe('createExternalCanUseTool synchronous host response', () => {
     expect(permissionTarget.pendingPermissionPrompts.size).toBe(0)
   })
 
+  for (const mode of ['fullAccess', 'bypassPermissions']) {
+    test(`${mode} auto-allows ordinary tools without prompting the host`, async () => {
+      const permissionTarget = createPermissionTarget()
+      const onPermissionRequest = vi.fn()
+
+      const canUseTool = createExternalCanUseTool(
+        undefined,
+        async () => ({ behavior: 'deny' as const, message: 'fallback' }),
+        permissionTarget,
+        onPermissionRequest,
+        undefined,
+        50,
+        `test-session-${mode}`,
+      )
+
+      const result = await canUseTool(
+        sdkAskTool,
+        { raw: true },
+        toolUseContextForPermissionMode(mode),
+        {} as any,
+        `${mode}-no-prompt`,
+        undefined,
+      )
+
+      expect(result).toMatchObject({
+        behavior: 'allow',
+        updatedInput: { normalized: true },
+      })
+      expect(onPermissionRequest).not.toHaveBeenCalled()
+      expect(permissionTarget.pendingPermissionPrompts.size).toBe(0)
+    })
+  }
+
   test('fullAccess preserves SDK callbacks for guidance prompts', async () => {
     const permissionTarget = createPermissionTarget()
     const onPermissionRequest = vi.fn((message: any) => {

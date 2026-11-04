@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 import type { AgentConfigPatch, AgentConfigSnapshot } from "@openclaude-studio/acp";
 import { Dialog, DialogContent } from "../shadcn/dialog.js";
-import { ConfigPanel } from "../beautifui/ConfigPanel.js";
+import { ConfigPanel, type ConfigSection } from "../beautifui/ConfigPanel.js";
 
 export type ConfigDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** which command opened the dialog; controls the panel's title + sections */
+  section?: ConfigSection;
   /** Reads the live config snapshot from the agent. */
   fetchConfig: (() => Promise<AgentConfigSnapshot>) | null;
   /** Applies a patch and resolves with the post-write snapshot. */
@@ -22,6 +24,7 @@ export type ConfigDialogProps = {
 export function ConfigDialog({
   open,
   onOpenChange,
+  section = "all",
   fetchConfig,
   patchConfig,
   onApplied,
@@ -72,7 +75,12 @@ export function ConfigDialog({
         aria-label="Studio configuration"
       >
         {snapshot ? (
-          <ConfigPanel snapshot={snapshot} saving={saving} onApply={apply} />
+          <ConfigPanel
+            snapshot={snapshot}
+            saving={saving}
+            section={section}
+            onApply={apply}
+          />
         ) : (
           <div className="flex h-64 items-center justify-center text-[13px] text-ink-3">
             {error ?? "Loading configuration…"}

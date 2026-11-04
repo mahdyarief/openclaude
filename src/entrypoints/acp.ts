@@ -132,21 +132,51 @@ function textFromMessage(message: SDKMessage): string | null {
   return null
 }
 
-function toolUpdate(message: SDKMessage): Record<string, unknown> | null {
-  if (message.type !== 'assistant' || !Array.isArray(message.message.content)) return null
-  const tool = message.message.content.find(
-    block => isRecord(block) && block.type === 'tool_use' && typeof block.id === 'string',
-  )
-  if (!isRecord(tool)) return null
+function toolResultText(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return content
+    .filter(isRecord)
+    .filter(block => block.type === 'text' && typeof block.text === 'string')
+    .map(block => block.text as string)
+    .join('\n')
+}
 
-  return {
-    sessionUpdate: 'tool_call',
-    toolCallId: tool.id,
-    title: typeof tool.name === 'string' ? tool.name : 'OpenClaude tool',
-    kind: 'other',
-    status: 'in_progress',
-    rawInput: isRecord(tool.input) ? tool.input : {},
+// Every tool_use opens a tool_call and every tool_result closes it with a
+// tool_call_update. Without the closing update the client never learns a tool
+// finished and only sees its result after reloading history from disk.
+export function toolUpdates(message: SDKMessage): Array<Record<string, unknown>> {
+  if (message.type !== 'assistant' && message.type !== 'user') return []
+  const content = (message.message as { content?: unknown }).content
+  if (!Array.isArray(content)) return []
+
+  if (message.type === 'assistant') {
+    return content
+      .filter(isRecord)
+      .filter(block => block.type === 'tool_use' && typeof block.id === 'string')
+      .map(tool => ({
+        sessionUpdate: 'tool_call',
+        toolCallId: tool.id,
+        title: typeof tool.name === 'string' ? tool.name : 'OpenClaude tool',
+        kind: 'other',
+        status: 'in_progress',
+        rawInput: isRecord(tool.input) ? tool.input : {},
+      }))
   }
+
+  return content
+    .filter(isRecord)
+    .filter(block => block.type === 'tool_result' && typeof block.tool_use_id === 'string')
+    .map(result => {
+      const text = toolResultText(result.content)
+      return {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: result.tool_use_id,
+        status: result.is_error === true ? 'failed' : 'completed',
+        ...(text ? { content: [{ type: 'content', content: { type: 'text', text } }] } : {}),
+        rawOutput: result.content ?? null,
+      }
+    })
 }
 
 export function createAcpServer(
@@ -404,8 +434,9 @@ export function createAcpServer(
                 update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } },
               })
             }
-            const tool = toolUpdate(sdkMessage)
-            if (tool) notify('session/update', { sessionId, update: tool })
+            for (const update of toolUpdates(sdkMessage)) {
+              notify('session/update', { sessionId, update })
+            }
           }
           if (message.id !== undefined) respond(message.id, { stopReason: 'end_turn' })
         } catch (error) {

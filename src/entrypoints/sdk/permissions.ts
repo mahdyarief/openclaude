@@ -367,6 +367,34 @@ export function createExternalCanUseTool(
     // No user callback — if host registered an onPermissionRequest callback,
     // call it directly and await external resolution with timeout.
     if (toolUseID && onPermissionRequest) {
+      // Only prompt the host when the session's mode/rules actually require
+      // it (same contract as structuredIO's SDK host path). Without this,
+      // bypassPermissions/fullAccess sessions prompted for every tool call.
+      const currentMode =
+        typeof toolUseContext.getAppState === 'function'
+          ? toolUseContext.getAppState().toolPermissionContext.mode
+          : undefined
+      const isSkipPromptMode =
+        currentMode === 'bypassPermissions' || currentMode === 'fullAccess'
+      if (isSkipPromptMode && forceDecision?.behavior !== 'ask') {
+        const modeDecision = await hasPermissionsToUseTool(
+          tool,
+          effectiveInput,
+          toolUseContext,
+          assistantMessage,
+          toolUseID,
+        )
+        if (modeDecision.behavior === 'deny') {
+          return modeDecision
+        }
+        if (modeDecision.behavior === 'allow') {
+          const finalInput = modeDecision.updatedInput ?? effectiveInput
+          const revalidation = await revalidateExternalAllow(effectiveInput, finalInput)
+          return revalidation ?? { ...modeDecision, updatedInput: finalInput }
+        }
+        effectiveInput = modeDecision.updatedInput ?? effectiveInput
+      }
+
       const requestId = randomUUID()
       const messageUuid = randomUUID()
 

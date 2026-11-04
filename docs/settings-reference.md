@@ -131,6 +131,20 @@ Controls what `/model` shows when an active provider profile is applied. `auto` 
 }
 ```
 
+### ACP / Studio permission mode
+
+Studio and other ACP clients send the selected permission mode in the
+`session/new` and `session/load` request (`_meta.permissionMode`). The agent
+reads it once when the session is created; there is no in-flight mode switch
+yet, so changing the mode applies to the next session.
+
+`fullAccess` and `bypassPermissions` auto-allow ordinary tools and do **not**
+emit `session/request_permission` — the host is only prompted when a tool's
+own rules return `ask` (or a forced decision requires it). Other modes
+(`default`, `plan`, `acceptEdits`, `dontAsk`) keep prompting as configured.
+If `_meta.permissionMode` is absent, the agent falls back to the
+`OPENCLAUDE_ACP_PERMISSION_MODE` env var, then to `bypassPermissions`.
+
 ### `autoCompactEnabled` (boolean)
 
 Controls whether auto-compact is on. This is a **global config** key (stored in `globalConfig.json`, toggled from the settings UI or `/config`), not a `settings.json` schema field — it is listed in the shipped defaults so new installs start with auto-compact enabled.

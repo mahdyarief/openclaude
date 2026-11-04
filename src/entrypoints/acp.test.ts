@@ -38,7 +38,51 @@ mock.module('./sdk/v2.js', () => ({
 }))
 mock.module('./init.js', () => ({ init: async () => {} }))
 
-const { createAcpServer } = await import('./acp.js')
+const { createAcpServer, toolUpdates } = await import('./acp.js')
+
+describe('acp tool updates', () => {
+  it('opens every tool_use and closes it from the matching tool_result', () => {
+    const opened = toolUpdates({
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } },
+          { type: 'tool_use', id: 't2', name: 'Read', input: { path: 'a' } },
+        ],
+      },
+    } as never)
+    expect(opened.map(u => [u.sessionUpdate, u.toolCallId, u.status])).toEqual([
+      ['tool_call', 't1', 'in_progress'],
+      ['tool_call', 't2', 'in_progress'],
+    ])
+
+    const closed = toolUpdates({
+      type: 'user',
+      message: {
+        content: [
+          { type: 'tool_result', tool_use_id: 't1', content: 'file.txt' },
+          { type: 'tool_result', tool_use_id: 't2', is_error: true, content: [{ type: 'text', text: 'missing' }] },
+        ],
+      },
+    } as never)
+    expect(closed).toEqual([
+      {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 't1',
+        status: 'completed',
+        content: [{ type: 'content', content: { type: 'text', text: 'file.txt' } }],
+        rawOutput: 'file.txt',
+      },
+      {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 't2',
+        status: 'failed',
+        content: [{ type: 'content', content: { type: 'text', text: 'missing' } }],
+        rawOutput: [{ type: 'text', text: 'missing' }],
+      },
+    ])
+  })
+})
 
 type Rpc = Record<string, unknown> & { id?: number; method?: string }
 

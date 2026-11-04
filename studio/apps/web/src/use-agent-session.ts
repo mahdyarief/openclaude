@@ -67,6 +67,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function useAgentSession(options: AgentSessionOptions): AgentSession {
   const { url, token, cwd, sessionId, permissionMode } = options
+  // Read at session/new and session/load time. Kept in a ref so flipping the
+  // mode does not tear down a live connection mid-turn.
+  const permissionModeRef = useRef(permissionMode)
+  permissionModeRef.current = permissionMode
   const [state, setState] = useState<SessionState>(() => emptySession('', ''))
   const [status, setStatus] = useState<ConnectionStatus>('connecting')
   const [error, setError] = useState<string | null>(null)
@@ -209,7 +213,9 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
             token,
             cwd,
             sessionId: mode.sessionId,
-            ...(permissionMode ? { permissionMode } : {}),
+            ...(permissionModeRef.current
+              ? { permissionMode: permissionModeRef.current }
+              : {}),
             onUpdate: applyUpdate,
             onPermission: requestPermission,
           }),
@@ -320,7 +326,7 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
 
         // Reuse the already-initialized connection to run `session/new`.
         const session = await Promise.race([
-          handshake.startSession(cwd, permissionMode),
+          handshake.startSession(cwd, permissionModeRef.current),
           timeout,
         ])
 

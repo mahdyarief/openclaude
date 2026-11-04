@@ -318,9 +318,12 @@ function SessionPane({
     cwd,
     // Build the options object conditionally — exactOptionalPropertyTypes is on.
     ...(initialSessionId ? { sessionId: initialSessionId } : {}),
+    permissionMode,
   })
   const [draft, setDraft] = useState('')
   const [configOpen, setConfigOpen] = useState(false)
+  const [configSection, setConfigSection] =
+    useState<"model" | "theme" | "provider" | "all">("all")
 
   useEffect(() => {
     // A failed stored connection falls back to the connect screen automatically.
@@ -397,6 +400,7 @@ function SessionPane({
       <ConfigDialog
         open={configOpen}
         onOpenChange={setConfigOpen}
+        section={configSection}
         fetchConfig={getConfig}
         patchConfig={setConfig}
       />
@@ -423,8 +427,10 @@ function SessionPane({
         commands={state.commands}
         onCommandPick={name => {
           // Interactive commands render terminal UI and cannot run over ACP,
-          // so open the studio's own panel for the ones we implement.
+          // so open the studio's own panel for the ones we implement. Each
+          // command lands on its own section instead of always showing model.
           if (name === 'config' || name === 'provider' || name === 'model' || name === 'theme') {
+            setConfigSection(name === 'config' ? 'all' : name)
             setConfigOpen(true)
           }
         }}

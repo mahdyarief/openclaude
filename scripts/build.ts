@@ -996,7 +996,6 @@ acpResult = await Bun.build({
           '@ant/computer-use-mcp',
           '@ant/computer-use-swift',
           '@ant/computer-use-input',
-          '@anthropic-ai/sandbox-runtime',
           'audio-capture-napi', 'audio-capture.node',
           'image-processor-napi', 'modifiers-napi', 'url-handler-napi', 'color-diff-napi',
           'asciichart', 'plist', 'cacache', 'fuse',
