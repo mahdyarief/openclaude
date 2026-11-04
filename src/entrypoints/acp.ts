@@ -29,6 +29,7 @@ import {
 } from '../utils/providerProfiles.js'
 import { getInitialMainLoopModel, setMainLoopModelOverride } from '../bootstrap/state.js'
 import { buildConfigSettings } from '../utils/studioConfigSurface.js'
+import { buildStatusSnapshot } from '../utils/statusLineSnapshot.js'
 
 /**
  * Tool permission mode. The default is `bypassPermissions` so the agent can
@@ -461,6 +462,18 @@ export function createAcpServer(
       }
       if (message.id === undefined) return
       respond(message.id, readConfigSnapshot())
+      return
+    }
+
+    if (message.method === 'openclaude/status') {
+      if (message.id === undefined) return
+      const sessionId = typeof message.params?.sessionId === 'string' ? message.params.sessionId : ''
+      const state = sessions.get(sessionId)
+      if (!state) {
+        fail(message.id, -32004, `Unknown session: ${sessionId}`)
+        return
+      }
+      respond(message.id, await buildStatusSnapshot(state.session.getAppState(), state.session.getMessages()))
       return
     }
 

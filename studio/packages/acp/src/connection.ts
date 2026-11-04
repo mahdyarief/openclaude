@@ -93,6 +93,8 @@ export type AgentHandshake = {
   fetchConfig: () => Promise<AgentConfigSnapshot>
   /** Applies a config change and returns the refreshed snapshot. */
   patchConfig: (patch: AgentConfigPatch) => Promise<AgentConfigSnapshot>
+  /** Reads the live statusline snapshot (branch, model, context, tasks). */
+  fetchStatus: (sessionId: string) => Promise<AgentStatusSnapshot>
   close: () => void
 }
 
@@ -148,7 +150,24 @@ export type AgentConfigPatch = {
   settings?: Record<string, unknown>
 }
 
+/**
+ * The terminal statusline data, exposed by the custom `openclaude/status` ACP
+ * method so Studio can render the same live info (branch, model, context,
+ * background tasks) as badges. Kept as a deliberate subset of the agent's
+ * `StatusSnapshot` — see `src/utils/statusLineSnapshot.ts`.
+ */
+export type AgentStatusSnapshot = {
+  model: { id: string; displayName: string }
+  branch: string | null
+  worktree: { name: string | null; path: string | null; branch: string | null } | null
+  permissionMode: string
+  contextWindow: { usedPercent: number; tokens: number; size: number } | null
+  session: { name: string | null; costUsd: number; durationMs: number }
+  backgroundTasks: { total: number; running: number; labels: string[] }
+}
+
 const CONFIG_METHOD = 'openclaude/config'
+const STATUS_METHOD = 'openclaude/status'
 
 export async function connectHandshake(
   options: Pick<AgentConnectionOptions, 'url' | 'token' | 'onUpdate' | 'onPermission'>,
@@ -190,6 +209,7 @@ export async function connectHandshake(
       return sessionLike
     },
     fetchConfig: () => fetchConfig(connection),
+    fetchStatus: sessionId => fetchStatus(connection, sessionId),
     patchConfig: patch => patchConfig(connection, patch),
     close: () => connection.close(),
   }
@@ -209,6 +229,16 @@ export async function patchConfig(
     mode: 'set',
     ...patch,
   }) as Promise<AgentConfigSnapshot>
+}
+
+/** Read the live statusline snapshot for a session. */
+export async function fetchStatus(
+  connection: ClientConnection,
+  sessionId: string,
+): Promise<AgentStatusSnapshot> {
+  return connection.agent.request(STATUS_METHOD, {
+    sessionId,
+  }) as Promise<AgentStatusSnapshot>
 }
 
 export function bridgeSocketUrl(url: string, token: string): string {

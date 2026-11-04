@@ -70,3 +70,6 @@ export type {
   ContextChunk,
   ContextCardsLabels,
 } from "./ContextCards.js";
+
+export { SessionStatusBar } from "./SessionStatusBar.js";
+export type { SessionStatusBarProps } from "./SessionStatusBar.js";

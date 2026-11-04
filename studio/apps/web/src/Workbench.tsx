@@ -10,12 +10,14 @@ import {
   PromptBar,
   ProjectRail,
   ResourceUsageFooter,
+  SessionStatusBar,
   SessionTabs,
 } from '@openclaude-studio/ui'
 import {
   PERMISSION_MODE_LABELS,
   PERMISSION_MODES,
   isPermissionMode,
+  type AgentStatusSnapshot,
   type ConnectionStatus,
   type PermissionMode,
 } from '@openclaude-studio/acp'
@@ -370,6 +372,7 @@ function SessionPane({
     respondPermission,
     getConfig,
     setConfig,
+    getStatus,
   } = useAgentSession({
     url: config.url,
     token: config.token,
@@ -383,11 +386,28 @@ function SessionPane({
   const [configOpen, setConfigOpen] = useState(false)
   const [configSection, setConfigSection] =
     useState<"model" | "theme" | "provider" | "settings" | "all">("all")
+  const [statusSnapshot, setStatusSnapshot] = useState<AgentStatusSnapshot | null>(null)
 
   useEffect(() => {
     // A failed stored connection falls back to the connect screen automatically.
     if (status === 'dead') onConnectionFailed?.()
   }, [status, onConnectionFailed])
+
+  // Poll the live statusline (branch, model, context, background tasks) so the
+  // badge strip stays current without needing a push notification per change.
+  useEffect(() => {
+    let cancelled = false
+    async function tick() {
+      const snapshot = await getStatus()
+      if (!cancelled && snapshot) setStatusSnapshot(snapshot)
+    }
+    void tick()
+    const id = setInterval(() => void tick(), 5000)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+  }, [getStatus])
 
   // Surface the pane's connection status to the tab strip dot. Only fire when it
   // actually changes so the parent state update is idempotent.
@@ -477,6 +497,10 @@ function SessionPane({
         section={configSection}
         fetchConfig={getConfig}
         patchConfig={setConfig}
+      />
+      <SessionStatusBar
+        status={statusSnapshot}
+        permissionLabel={PERMISSION_MODE_LABELS[permissionMode]}
       />
       <PromptBar
         value={draft}

@@ -150,6 +150,9 @@ export interface SDKSession {
   sendMessage(content: string): AsyncIterable<SDKMessage>
   /** Return all messages accumulated so far in this session. */
   getMessages(): SDKMessage[]
+  /** Return the session's live AppState snapshot (permission mode, tasks, etc.).
+   *  Read-only — mutating it here would desync the engine's view. */
+  getAppState(): AppState
   /** Abort the current in-flight query. */
   interrupt(): void
   /** Close the session and release resources. Resolves after MCP child
@@ -389,6 +392,10 @@ class SDKSessionImpl implements SDKSession {
 
   getMessages(): SDKMessage[] {
     return this.engine.getMessages().map(msg => mapMessageToSDK(msg as Record<string, unknown>))
+  }
+
+  getAppState(): AppState {
+    return this.appStateStore.getState()
   }
 
   interrupt(): void {

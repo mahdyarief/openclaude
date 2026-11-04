@@ -6,11 +6,13 @@ import {
   emptySession,
   fetchConfig,
   fetchSessionHistory,
+  fetchStatus,
   patchConfig,
   type AgentConnectionHandle,
   type AgentHandshake,
   type AgentConfigPatch,
   type AgentConfigSnapshot,
+  type AgentStatusSnapshot,
   type ConnectionStatus,
   type PermissionRequest,
   type RequestPermissionRequest,
@@ -100,6 +102,8 @@ type AgentSession = {
   getConfig: () => Promise<AgentConfigSnapshot>
   /** Applies a config patch and resolves with the refreshed snapshot. */
   setConfig: (patch: AgentConfigPatch) => Promise<AgentConfigSnapshot>
+  /** Live statusline snapshot (branch, model, context, background tasks). */
+  getStatus: () => Promise<AgentStatusSnapshot | null>
 }
 
 const HANDSHAKE_TIMEOUT_MS = 10000
@@ -626,6 +630,18 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
     throw new Error('Not connected')
   }, [])
 
+  // The status method needs a live session id: a handshake-only connection has
+  // not created one yet, so there is nothing to report until the first prompt.
+  const getStatus = useCallback(async (): Promise<AgentStatusSnapshot | null> => {
+    const id = sessionIdRef.current
+    if (!id) return null
+    const handshake = handshakeRef.current
+    if (handshake) return handshake.fetchStatus(id)
+    const handle = handleRef.current
+    if (handle) return fetchStatus(handle.connection, id)
+    return null
+  }, [])
+
   const respondPermission = useCallback(
     (optionId: string | null, answers?: Record<string, string> | null) => {
       const resolve = permissionResolver.current
@@ -656,5 +672,6 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
     respondPermission,
     getConfig,
     setConfig,
+    getStatus,
   }
 }
