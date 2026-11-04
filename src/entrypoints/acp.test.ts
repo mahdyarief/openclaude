@@ -9,13 +9,19 @@ type PermissionResult = {
 
 const responded: Array<{ toolUseId: string; decision: PermissionResult }> = []
 const permissionCallbacks: Array<(message: unknown) => void> = []
+const closeCalls: Array<Promise<void>> = []
 
 const fakeSession = {
   sessionId: 'fake-session-id',
   sendMessage: async function* () {},
   getMessages: () => [],
   interrupt: () => {},
-  close: () => {},
+  close: () => {
+    // Simulates async MCP child cleanup; the server must await this.
+    const p = new Promise<void>(resolve => setTimeout(resolve, 10))
+    closeCalls.push(p)
+    return p
+  },
   respondToPermission: (toolUseId: string, decision: PermissionResult) => {
     responded.push({ toolUseId, decision })
   },
@@ -160,7 +166,25 @@ describe('acp permission routing', () => {
         decision: { behavior: 'allow', decisionClassification: 'user_temporary' },
       })
     } finally {
-      h.close()
+      await h.close()
     }
+  })
+})
+
+describe('acp shutdown', () => {
+  it('awaits session.close() so MCP children are reaped before exit', async () => {
+    closeCalls.length = 0
+    const h = createHarness()
+    h.send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })
+    await h.waitFor(m => m.id === 1, 'initialize response')
+    h.send({ jsonrpc: '2.0', id: 2, method: 'session/new', params: { cwd: '/tmp' } })
+    await h.waitFor(m => m.id === 2, 'session/new response')
+
+    expect(closeCalls).toHaveLength(0)
+    await h.close()
+    expect(closeCalls).toHaveLength(1)
+    // The promise returned by close() must resolve only after the session
+    // cleanup promise settled, i.e. it was awaited rather than fire-and-forget.
+    await expect(closeCalls[0]).resolves.toBeUndefined()
   })
 })

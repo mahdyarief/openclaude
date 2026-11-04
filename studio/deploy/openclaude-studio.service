@@ -21,6 +21,12 @@ ProtectHome=read-only
 # studio UI state, and the repo tree (pnpm/bun rebuilds write node_modules and
 # dist under %h/code/openclaude).
 ReadWritePaths=%h/.local/share/openclaude %h/.config/openclaude %h/.openclaude %h/.config/openclaude-studio %h/code/openclaude
+# Cap the bridge's memory so a runaway agent/MCP child cannot drive the host
+# into swap thrashing. The bridge process is small; agent children are the
+# consumers, and they inherit this cgroup. Override per host via a drop-in if
+# the box is smaller/larger than 16 GB.
+MemoryMax=8G
+MemorySwapMax=2G
 StandardOutput=journal
 StandardError=journal
 

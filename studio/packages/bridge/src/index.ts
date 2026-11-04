@@ -65,12 +65,38 @@ export async function startBridge(options: BridgeOptions = {}): Promise<{
     args: [defaultShim],
   }
   const children = new Set<ChildProcess>()
+
   // Resource sampler for the status footer. Cumulative CPU counters are
   // converted to a percentage between polls, so the web client just reads it.
   const sampleMetrics = createMetricsSampler({
     startedAt: Date.now(),
     activeSessions: () => children.size,
   })
+
+  /**
+   * Terminate an agent child process and its entire process group.
+   *
+   * Sends SIGTERM first, then escalates to SIGKILL after a grace period. The
+   * ACP agent installs its own SIGTERM handler that calls `session.close()` to
+   * reap MCP child processes, but if the process is stuck in uninterruptible
+   * I/O (state D) it cannot react — so we force-kill the whole group to avoid
+   * orphaned agent/MCP processes piling up.
+   */
+  const KILL_GRACE_MS = 5000
+  const signalAgent = (child: ChildProcess): void => {
+    if (child.exitCode !== null || child.signalCode !== null) return
+    const groupPid = child.pid !== undefined && process.platform !== 'win32' ? -child.pid : child.pid
+    const term = (sig: NodeJS.Signals): void => {
+      try {
+        if (groupPid !== undefined) process.kill(groupPid, sig)
+      } catch {
+        child.kill(sig)
+      }
+    }
+    term('SIGTERM')
+    const timer = setTimeout(() => term('SIGKILL'), KILL_GRACE_MS)
+    child.once('exit', () => clearTimeout(timer))
+  }
   // Live SSE subscribers. `/state` writes broadcast to every device so opening a
   // session on one device updates the rail on the others without a refresh.
   const stateSubscribers = new Set<ServerResponse>()
@@ -331,6 +357,23 @@ export async function startBridge(options: BridgeOptions = {}): Promise<{
   })
   const wss = new WebSocketServer({ noServer: true })
 
+  // Reap agents whose UI disappeared without a clean close frame (tab closed,
+  // laptop slept, Tailscale dropped). Without a heartbeat the `close` event may
+  // never fire and the agent child is orphaned indefinitely.
+  type AliveSocket = WebSocket & { isAlive?: boolean }
+  const HEARTBEAT_MS = 30_000
+  const heartbeat = setInterval(() => {
+    for (const client of wss.clients as Set<AliveSocket>) {
+      if (client.isAlive === false) {
+        client.terminate()
+        continue
+      }
+      client.isAlive = false
+      client.ping()
+    }
+  }, HEARTBEAT_MS)
+  heartbeat.unref()
+
   server.on('upgrade', (request, socket, head) => {
     const url = new URL(request.url ?? '/', `http://${host}`)
     const presented = url.searchParams.get('token')
@@ -345,6 +388,11 @@ export async function startBridge(options: BridgeOptions = {}): Promise<{
     }
 
     wss.handleUpgrade(request, socket, head, ws => {
+      const tracked = ws as AliveSocket
+      tracked.isAlive = true
+      tracked.on('pong', () => {
+        tracked.isAlive = true
+      })
       const agent = spawn(agentCommand.command, agentCommand.args, {
         cwd: options.cwd ?? process.cwd(),
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -389,16 +437,7 @@ export async function startBridge(options: BridgeOptions = {}): Promise<{
 
       const kill = (): void => {
         children.delete(agent)
-        if (agent.exitCode !== null || agent.signalCode !== null) return
-        try {
-          if (agent.pid !== undefined && process.platform !== 'win32') {
-            process.kill(-agent.pid, 'SIGTERM')
-          } else {
-            agent.kill('SIGTERM')
-          }
-        } catch {
-          agent.kill('SIGTERM')
-        }
+        signalAgent(agent)
       }
 
       ws.on('close', kill)
@@ -419,21 +458,12 @@ export async function startBridge(options: BridgeOptions = {}): Promise<{
     url: `ws://${host}:${address.port}`,
     token,
     close: async () => {
+      clearInterval(heartbeat)
       for (const subscriber of stateSubscribers) subscriber.destroy()
       stateSubscribers.clear()
       for (const client of wss.clients as Set<WebSocket>) client.terminate()
-      for (const child of children) {
-        if (child.exitCode !== null || child.signalCode !== null) continue
-        try {
-          if (child.pid !== undefined && process.platform !== 'win32') {
-            process.kill(-child.pid, 'SIGTERM')
-          } else {
-            child.kill('SIGTERM')
-          }
-        } catch {
-          child.kill('SIGTERM')
-        }
-      }
+      for (const child of children) signalAgent(child)
+      children.clear()
       await new Promise<void>(resolve => server.close(() => resolve()))
     },
   }

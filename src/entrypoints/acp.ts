@@ -182,7 +182,7 @@ export function toolUpdates(message: SDKMessage): Array<Record<string, unknown>>
 export function createAcpServer(
   input: NodeJS.ReadableStream = process.stdin,
   output: NodeJS.WritableStream = process.stdout,
-): { close: () => void } {
+): { close: () => Promise<void> } {
   const sessions = new Map<string, SessionState>()
   const pendingRequests = new Map<JsonRpcId, (result: unknown) => void>()
   let nextRequestId = 1
@@ -571,15 +571,36 @@ export function createAcpServer(
     })
   })
 
-  const close = (): void => {
+  let closed = false
+  const close = async (): Promise<void> => {
+    if (closed) return
+    closed = true
     rl.close()
-    for (const state of sessions.values()) state.session.close()
+    // Await each session's cleanup so child MCP subprocesses are reaped before
+    // the process exits — otherwise they orphan and accumulate (e.g.
+    // codebase-memory, web-access plugins).
+    const cleanups = [...sessions.values()].map(state => state.session.close())
     sessions.clear()
+    await Promise.allSettled(cleanups)
   }
 
   return { close }
 }
 
 if (import.meta.main) {
-  createAcpServer()
+  const server = createAcpServer()
+  let shuttingDown = false
+  const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
+    if (shuttingDown) return
+    shuttingDown = true
+    process.stderr.write(`[acp] received ${signal}, shutting down\n`)
+    try {
+      await server.close()
+    } finally {
+      process.exit(0)
+    }
+  }
+  process.on('SIGTERM', () => void shutdown('SIGTERM'))
+  process.on('SIGINT', () => void shutdown('SIGINT'))
+  process.once('beforeExit', () => void server.close())
 }

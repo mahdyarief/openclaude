@@ -152,8 +152,9 @@ export interface SDKSession {
   getMessages(): SDKMessage[]
   /** Abort the current in-flight query. */
   interrupt(): void
-  /** Close the session and release resources. */
-  close(): void
+  /** Close the session and release resources. Resolves after MCP child
+   * processes have been disconnected. */
+  close(): Promise<void>
   /**
    * Respond to a pending permission prompt asynchronously.
    * Use this when no canUseTool callback was provided — the SDK emits a
@@ -412,23 +413,26 @@ class SDKSessionImpl implements SDKSession {
     this.pendingPermissionPrompts.clear()
   }
 
-  close(): void {
+  async close(): Promise<void> {
     const wrapperController = this._abortController
     this.interruptWithSource('sdk_close')
     if (wrapperController) {
       requestSdkRootAbort(wrapperController, 'sdk_close', 'sdk_session')
     }
     this._abortController = null
-    // Disconnect MCP clients to prevent resource leaks
+    // Disconnect MCP clients to prevent resource leaks. Await cleanup so the
+    // caller (e.g. the ACP server on SIGTERM) can reap child MCP subprocesses
+    // deterministically before the process exits.
     const mcpClients = this._engine?.getMcpClients?.() ?? []
-    for (const client of mcpClients) {
-      if (client.type === 'connected' && client.cleanup) {
-        // Fire-and-forget cleanup — close() is synchronous
-        void client.cleanup().catch(err => {
-          console.warn('SDK: MCP client cleanup error:', err instanceof Error ? err.message : String(err))
-        })
-      }
-    }
+    await Promise.allSettled(
+      mcpClients.map(client =>
+        client.type === 'connected' && client.cleanup
+          ? client.cleanup().catch(err =>
+              console.warn('SDK: MCP client cleanup error:', err instanceof Error ? err.message : String(err)),
+            )
+          : Promise.resolve(),
+      ),
+    )
     // Clear engine and store references to prevent memory leaks
     this._engine = null
     this._appStateStore = null
@@ -835,6 +839,6 @@ export async function unstable_v2_prompt(
 
     return resultMessage
   } finally {
-    session.close()
+    await session.close()
   }
 }
