@@ -175,6 +175,29 @@ export function Workbench({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openSessions, byPath])
 
+  // A session that opens — created here or pushed from another device over the
+  // SSE state stream — may not yet appear in the per-workspace listing, so the
+  // History list would otherwise only refresh after a manual button press. When
+  // an open session id is missing from the known summaries, re-list so it shows
+  // up without a refresh. Each id is only ever attempted once, so an id that
+  // genuinely resolves to no workspace cannot spin the listing forever.
+  const autoRefreshRef = useRef(new Set<string>())
+  const openSessionsKey = openSessions.join('\n')
+  useEffect(() => {
+    const known = new Set(
+      Object.values(byPath).flatMap(entry => entry.sessions.map(s => s.id)),
+    )
+    const missing = openSessions.filter(
+      id => !known.has(id) && !autoRefreshRef.current.has(id),
+    )
+    const anyLoading = Object.values(byPath).some(entry => entry.loading)
+    if (missing.length > 0 && !anyLoading) {
+      for (const id of missing) autoRefreshRef.current.add(id)
+      refreshSessions()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openSessionsKey, byPath])
+
   const workspaces = workspaceProjects.map(project => {
     const entry = byPath[project.path]
     return {
