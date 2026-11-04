@@ -515,13 +515,24 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
 
   const sendPrompt = useCallback((text: string) => {
     void (async () => {
+      // Show the thinking indicator immediately. On a cold session this covers
+      // the delay of reattaching (reconnect) and spawning the agent child
+      // (ensureSession) before the first streamed chunk arrives — otherwise the
+      // pane looks frozen for a moment even though the prompt is in flight.
+      setAwaiting(true)
       // A soft-idled session must reattach before the prompt can be delivered;
       // the transcript already on screen is preserved by the reconnect.
       await reconnect()
       const id = await ensureSession()
-      if (!id) return
+      if (!id) {
+        setAwaiting(false)
+        return
+      }
       const handle = handleRef.current
-      if (!handle) return
+      if (!handle) {
+        setAwaiting(false)
+        return
+      }
       // Optimistic message: ACP streams the user's text only as a
       // `user_message_chunk` that may never arrive for a loaded session, so
       // the draft must show in the transcript immediately.
@@ -539,7 +550,6 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
         }))
         setState(store.getState())
       }
-      setAwaiting(true)
       void handle.session
         .prompt(text)
         .then(response => {
