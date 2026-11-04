@@ -320,6 +320,25 @@ export default function ApprovalCard({
                     style={questionStyle}
                   >
                     <div className="pr-7 text-[14px] font-medium text-ink">{question.q}</div>
+                    <div
+                      onKeyDown={(event) => {
+                        // Arrow keys walk the option rows (including the
+                        // custom-answer row); Enter/Space on a focused button
+                        // already fires its click natively.
+                        if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+                        const rows = event.currentTarget.querySelectorAll<HTMLElement>("[data-menu-row]");
+                        if (rows.length === 0) return;
+                        event.preventDefault();
+                        const current = Array.from(rows).indexOf(
+                          document.activeElement as HTMLElement,
+                        );
+                        const delta = event.key === "ArrowDown" ? 1 : -1;
+                        const next = current === -1
+                          ? (delta === 1 ? 0 : rows.length - 1)
+                          : (current + delta + rows.length) % rows.length;
+                        rows[next]?.focus();
+                      }}
+                    >
                     <GlideMenu className="mt-2.5 flex flex-col gap-1" highlightClassName="inset-x-0 rounded-control bg-hover">
                       {question.options.map((option, i) => {
                         const on = picked.includes(i);
@@ -371,6 +390,7 @@ export default function ApprovalCard({
                         />
                       </label>
                     </GlideMenu>
+                    </div>
                   </div>
                 );
               })}
