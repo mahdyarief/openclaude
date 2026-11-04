@@ -22,6 +22,11 @@ export type AgentConnectionOptions = {
   onUpdate: (notification: SessionNotification) => void
   onPermission: (request: RequestPermissionRequest) => Promise<RequestPermissionResponse>
   /**
+   * Fired when the agent pushes a live statusline snapshot
+   * (`openclaude/status_update` notification). Call it instead of polling.
+   */
+  onStatus?: (snapshot: AgentStatusSnapshot) => void
+  /**
    * When provided, the connection loads an existing session with this id
    * (via `session/load`) instead of starting a brand new one (`session/new`).
    */
@@ -67,6 +72,13 @@ export type AgentConnectionHandle = {
   sessionId: string
   agentInfo: InitializeResponse
   disconnect: () => void
+  /**
+   * Subscribe to pushed statusline updates for this session. Returns a
+   * function that unsubscribes. The `openclaude/status_update` notification is
+   * registered automatically by the connection; this only toggles the local
+   * callback so components can mount/unmount without re-handshaking.
+   */
+  onStatus: (callback: (snapshot: AgentStatusSnapshot) => void) => () => void
 }
 
 /**
@@ -95,6 +107,12 @@ export type AgentHandshake = {
   patchConfig: (patch: AgentConfigPatch) => Promise<AgentConfigSnapshot>
   /** Reads the live statusline snapshot (branch, model, context, tasks). */
   fetchStatus: (sessionId: string) => Promise<AgentStatusSnapshot>
+  /**
+   * Subscribe to pushed statusline updates. Returns an unsubscribe function.
+   * The agent emits one immediately after `session/new`/`session/load`, then
+   * on every AppState change, so callers never need to poll.
+   */
+  onStatus: (callback: (snapshot: AgentStatusSnapshot) => void) => () => void
   close: () => void
 }
 
@@ -169,14 +187,33 @@ export type AgentStatusSnapshot = {
 const CONFIG_METHOD = 'openclaude/config'
 const STATUS_METHOD = 'openclaude/status'
 
+const STATUS_UPDATE_METHOD = 'openclaude/status_update'
+
+/** Params of the custom `openclaude/status_update` notification. */
+type StatusUpdateParams = {
+  sessionId?: string
+  status: AgentStatusSnapshot
+}
+
 export async function connectHandshake(
-  options: Pick<AgentConnectionOptions, 'url' | 'token' | 'onUpdate' | 'onPermission'>,
+  options: Pick<AgentConnectionOptions, 'url' | 'token' | 'onUpdate' | 'onPermission' | 'onStatus'>,
 ): Promise<AgentHandshake> {
+  let statusCallback: ((snapshot: AgentStatusSnapshot) => void) | null = null
   const stream = createWebSocketStream(bridgeSocketUrl(options.url, options.token))
   const app = client({ name: 'openclaude-studio' })
     .onNotification(CLIENT_METHODS.session_update, ({ params }) => {
       options.onUpdate(params)
     })
+    .onNotification(
+      STATUS_UPDATE_METHOD,
+      params => params as StatusUpdateParams,
+      ({ params }) => {
+        const cb = statusCallback ?? options.onStatus
+        if (cb) {
+          cb(params.status)
+        }
+      },
+    )
     .onRequest(CLIENT_METHODS.session_request_permission, ({ params }) =>
       options.onPermission(params),
     )
@@ -211,6 +248,12 @@ export async function connectHandshake(
     fetchConfig: () => fetchConfig(connection),
     fetchStatus: sessionId => fetchStatus(connection, sessionId),
     patchConfig: patch => patchConfig(connection, patch),
+    onStatus: callback => {
+      statusCallback = callback
+      return () => {
+        if (statusCallback === callback) statusCallback = null
+      }
+    },
     close: () => connection.close(),
   }
 }
@@ -262,11 +305,22 @@ function toContentBlocks(
 export async function createAgentConnection(
   options: AgentConnectionOptions,
 ): Promise<AgentConnectionHandle> {
+  let statusCallback: ((snapshot: AgentStatusSnapshot) => void) | null = null
   const stream = createWebSocketStream(bridgeSocketUrl(options.url, options.token))
   const app = client({ name: 'openclaude-studio' })
     .onNotification(CLIENT_METHODS.session_update, ({ params }) => {
       options.onUpdate(params)
     })
+    .onNotification(
+      STATUS_UPDATE_METHOD,
+      params => params as StatusUpdateParams,
+      ({ params }) => {
+        const cb = statusCallback ?? options.onStatus
+        if (cb) {
+          cb(params.status)
+        }
+      },
+    )
     .onRequest(CLIENT_METHODS.session_request_permission, ({ params }) =>
       options.onPermission(params),
     )
@@ -313,6 +367,12 @@ export async function createAgentConnection(
       session,
       sessionId,
       agentInfo,
+      onStatus: callback => {
+        statusCallback = callback
+        return () => {
+          if (statusCallback === callback) statusCallback = null
+        }
+      },
       disconnect: () => connection.close(),
     }
   }
@@ -335,6 +395,12 @@ export async function createAgentConnection(
     session: sessionLike,
     sessionId: sessionLike.sessionId,
     agentInfo,
+    onStatus: callback => {
+      statusCallback = callback
+      return () => {
+        if (statusCallback === callback) statusCallback = null
+      }
+    },
     disconnect: () => connection.close(),
   }
 }

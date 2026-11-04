@@ -373,6 +373,7 @@ function SessionPane({
     getConfig,
     setConfig,
     getStatus,
+    onStatus,
   } = useAgentSession({
     url: config.url,
     token: config.token,
@@ -393,21 +394,23 @@ function SessionPane({
     if (status === 'dead') onConnectionFailed?.()
   }, [status, onConnectionFailed])
 
-  // Poll the live statusline (branch, model, context, background tasks) so the
-  // badge strip stays current without needing a push notification per change.
+  // The agent pushes a statusline snapshot on every AppState change
+  // (`openclaude/status_update`), so the badge strip is live without polling.
+  // One-shot `getStatus()` paints it immediately on mount in case a push has
+  // not landed yet.
   useEffect(() => {
     let cancelled = false
-    async function tick() {
-      const snapshot = await getStatus()
+    const unsubscribe = onStatus(snapshot => {
+      setStatusSnapshot(snapshot)
+    })
+    void getStatus().then(snapshot => {
       if (!cancelled && snapshot) setStatusSnapshot(snapshot)
-    }
-    void tick()
-    const id = setInterval(() => void tick(), 5000)
+    })
     return () => {
       cancelled = true
-      clearInterval(id)
+      unsubscribe()
     }
-  }, [getStatus])
+  }, [onStatus, getStatus])
 
   // Surface the pane's connection status to the tab strip dot. Only fire when it
   // actually changes so the parent state update is idempotent.

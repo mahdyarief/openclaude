@@ -104,6 +104,12 @@ type AgentSession = {
   setConfig: (patch: AgentConfigPatch) => Promise<AgentConfigSnapshot>
   /** Live statusline snapshot (branch, model, context, background tasks). */
   getStatus: () => Promise<AgentStatusSnapshot | null>
+  /**
+   * Subscribe to pushed statusline updates. Survives reconnects: the hook keeps
+   * the listener set and re-binds it to each new connection. Returns an
+   * unsubscribe function.
+   */
+  onStatus: (callback: (snapshot: AgentStatusSnapshot) => void) => () => void
 }
 
 const HANDSHAKE_TIMEOUT_MS = 10000
@@ -164,6 +170,12 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
   const sessionIdRef = useRef<string | null>(sessionId ?? null)
   // In-flight session creation, so concurrent ensureSession() calls share one.
   const creatingRef = useRef<Promise<string | null> | null>(null)
+  // Statusline subscribers live here (not on the connection) so a reconnect or
+  // a fresh handshake re-binds them without the component having to re-subscribe.
+  const statusListenersRef = useRef(new Set<(snapshot: AgentStatusSnapshot) => void>())
+  const emitStatus = useCallback((snapshot: AgentStatusSnapshot) => {
+    for (const listener of statusListenersRef.current) listener(snapshot)
+  }, [])
 
   const applyUpdate = useCallback((notification: SessionNotification) => {
     updateChain.current = updateChain.current
@@ -284,6 +296,7 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
               : {}),
             onUpdate: applyUpdate,
             onPermission: requestPermission,
+            onStatus: emitStatus,
           }),
           timeout,
         ])
@@ -335,6 +348,7 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
           token,
           onUpdate: applyUpdate,
           onPermission: requestPermission,
+          onStatus: emitStatus,
         }),
         timeout,
       ])
@@ -495,6 +509,7 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
           session,
           sessionId: session.sessionId,
           agentInfo: handshake.agentInfo,
+          onStatus: handshake.onStatus,
           disconnect: () => handshake.connection.close(),
         }
         adoptSession(session.sessionId, store)
@@ -653,6 +668,19 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
     [],
   )
 
+  // Subscribe to pushed statusline updates. The listener is kept in the hook's
+  // set and re-bound to every connection, so reconnects are invisible to the
+  // subscriber. Callers no longer need to poll.
+  const onStatus = useCallback(
+    (callback: (snapshot: AgentStatusSnapshot) => void) => {
+      statusListenersRef.current.add(callback)
+      return () => {
+        statusListenersRef.current.delete(callback)
+      }
+    },
+    [],
+  )
+
   return {
     state,
     status,
@@ -673,5 +701,6 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
     getConfig,
     setConfig,
     getStatus,
+    onStatus,
   }
 }

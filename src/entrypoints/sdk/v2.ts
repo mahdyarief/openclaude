@@ -153,6 +153,12 @@ export interface SDKSession {
   /** Return the session's live AppState snapshot (permission mode, tasks, etc.).
    *  Read-only — mutating it here would desync the engine's view. */
   getAppState(): AppState
+  /**
+   * Subscribe to live AppState changes for this session. The listener fires
+   * after every `setState` call; the returned function stops it. Studio uses
+   * this to push a statusline update instead of polling.
+   */
+  subscribeAppState(listener: () => void): () => void
   /** Abort the current in-flight query. */
   interrupt(): void
   /** Close the session and release resources. Resolves after MCP child
@@ -396,6 +402,10 @@ class SDKSessionImpl implements SDKSession {
 
   getAppState(): AppState {
     return this.appStateStore.getState()
+  }
+
+  subscribeAppState(listener: () => void): () => void {
+    return this.appStateStore.subscribe(listener)
   }
 
   interrupt(): void {

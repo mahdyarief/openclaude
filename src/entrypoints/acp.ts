@@ -95,6 +95,7 @@ type SessionState = {
   cwd: string
   session: SDKSession
   active: Promise<void> | null
+  statusUnsubscribe?: () => void
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -272,6 +273,52 @@ export function createAcpServer(
     }
   }
 
+  /**
+   * Push the live statusline (branch, model, context, background tasks) to the
+   * client on every AppState change instead of having the client poll. The
+   * snapshot is built on a timer so a burst of `setState` calls (e.g. a single
+   * tool execution that flips several task states) collapses to one message.
+   *
+   * `getBranch()` shells out to git and is cached, cost/duration are cheap
+   * globals, so per-change builds are light — no need for the client to poll.
+   */
+  const subscribeSessionStatus = (state: SessionState): void => {
+    const sessionId = state.session.sessionId
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const emit = (): void => {
+      if (timer) {
+        clearTimeout(timer)
+        timer = null
+      }
+      timer = setTimeout(() => {
+        timer = null
+        void (async () => {
+          try {
+            notify('openclaude/status_update', {
+              sessionId,
+              status: await buildStatusSnapshot(state.session.getAppState(), state.session.getMessages()),
+            })
+          } catch {
+            // Best-effort: a transient git failure must not tear down the
+            // subscription; the client keeps its last known snapshot.
+          }
+        })()
+      }, 150)
+    }
+    const stop = state.session.subscribeAppState(() => emit())
+    state.statusUnsubscribe = () => {
+      if (timer) {
+        clearTimeout(timer)
+        timer = null
+      }
+      stop()
+    }
+    // Emit once immediately so the client has a snapshot without waiting for
+    // the first change — the pull-based `openclaude/status` remains the
+    // fallback for initial paint.
+    emit()
+  }
+
   const requestPermission = (
     sessionId: string,
     session: SDKSession,
@@ -377,6 +424,7 @@ export function createAcpServer(
       // Advertise after the response so the client has adopted the session
       // store by the time the command list lands.
       void advertiseCommands(session.sessionId, cwd)
+      subscribeSessionStatus(sessions.get(session.sessionId)!)
       return
     }
 
@@ -403,6 +451,7 @@ export function createAcpServer(
       sessions.set(sessionId, { cwd, session, active: null })
       if (message.id !== undefined) respond(message.id, { sessionId })
       void advertiseCommands(sessionId, cwd)
+      subscribeSessionStatus(sessions.get(sessionId)!)
       return
     }
 
@@ -616,7 +665,10 @@ export function createAcpServer(
     // Await each session's cleanup so child MCP subprocesses are reaped before
     // the process exits — otherwise they orphan and accumulate (e.g.
     // codebase-memory, web-access plugins).
-    const cleanups = [...sessions.values()].map(state => state.session.close())
+    const cleanups = [...sessions.values()].map(state => {
+      state.statusUnsubscribe?.()
+      return state.session.close()
+    })
     sessions.clear()
     await Promise.allSettled(cleanups)
   }
