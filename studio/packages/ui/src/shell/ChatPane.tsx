@@ -134,7 +134,7 @@ export function ChatPane({
         ) : null}
       </div>
 
-      <div className="min-h-0 flex-1">
+      <div className="min-h-0 flex-1 relative">
         {loadingHistory ? (
           <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-3 py-5 sm:px-6 sm:py-6">
             <div className="flex items-center gap-2 pb-2">
@@ -155,8 +155,8 @@ export function ChatPane({
           <MessageList messages={messages} toolCalls={toolCalls} streaming={streaming} />
         )}
         {awaiting ? (
-          <div className="mx-auto w-full max-w-3xl px-3 pb-2 pt-1 sm:px-6">
-            <div className="flex items-center gap-2">
+          <div className="absolute inset-x-0 bottom-0 flex justify-center pointer-events-none pb-3">
+            <div className="flex items-center gap-2 rounded-[var(--radius-card)] border border-line bg-surface px-4 py-2 shadow-[var(--shadow-card)]">
               <LoadingState variant="Dots" labels={{ label: 'OpenClaude is thinking' }} />
               <span className="text-[12px] text-ink-3">OpenClaude is thinking…</span>
             </div>
