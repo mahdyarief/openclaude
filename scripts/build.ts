@@ -1101,11 +1101,20 @@ if (!existsSync(resolve(studioRoot, 'server.ts'))) {
   const runPnpm = (args: string[]): boolean => {
     for (const cmd of ['corepack', 'pnpm']) {
       const argv = cmd === 'corepack' ? ['corepack', 'pnpm', ...args] : ['pnpm', ...args]
-      const result = Bun.spawnSync(argv, {
-        cwd: studioRoot,
-        stdio: ['ignore', 'inherit', 'inherit'],
-        env: { ...process.env, COREPACK_ENABLE_DOWNLOAD_PROMPT: '0' },
-      })
+      // `Bun.spawnSync` throws ENOENT when the executable is missing rather
+      // than returning a non-zero exit code, so the pnpm fallback below is only
+      // reachable when the failure is not a missing binary.
+      let result: { exitCode?: number } = {}
+      try {
+        result = Bun.spawnSync(argv, {
+          cwd: studioRoot,
+          stdio: ['ignore', 'inherit', 'inherit'],
+          env: { ...process.env, COREPACK_ENABLE_DOWNLOAD_PROMPT: '0' },
+        })
+      } catch {
+        console.warn(`Studio: ${argv[0]} not found, trying next resolver...`)
+        continue
+      }
       if (result.exitCode === 0) return true
       // `corepack` may be absent (older Node or a stripped runtime); fall back
       // to a global pnpm. If that also fails, surface the original error.
