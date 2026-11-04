@@ -40,12 +40,18 @@ const LG = 1024
 const MD = 768
 
 // Side-region resize limits, in pixels. Shrinking past `minSize` collapses the
-// panel; `defaultSize` is the resting width. The explorer starts narrower so the
-// centre keeps more room by default.
+// panel; `defaultSize` is the resting width. The explorer starts at its minimum
+// so the centre keeps the most room by default. `maxSize` keeps either side
+// region from eating the centre: together with the centre's `minSize` the chat
+// area can never be squeezed into a thin sliver.
 const RAIL_MIN_PX = 200
 const RAIL_DEFAULT_PX = 264
+const RAIL_MAX_PX = 420
 const EXPLORER_MIN_PX = 240
-const EXPLORER_DEFAULT_PX = 340
+const EXPLORER_DEFAULT_PX = 240
+const EXPLORER_MAX_PX = 480
+// Centre keeps a usable minimum regardless of how far the side regions drag.
+const MAIN_MIN_PX = 360
 
 const STORAGE_KEY = 'openclaude-studio:shell-layout'
 
@@ -224,6 +230,7 @@ export function AppShell({
           panelRef={railRef}
           defaultSize={initial?.rail ?? RAIL_DEFAULT_PX}
           minSize={RAIL_MIN_PX}
+          maxSize={RAIL_MAX_PX}
           collapsedSize={0}
           collapsible
           onResize={(_, id) => {
@@ -243,7 +250,7 @@ export function AppShell({
 
         <ResizableHandle withHandle />
 
-        <ResizablePanel id="main" className="flex min-h-0 flex-col">
+        <ResizablePanel id="main" minSize={MAIN_MIN_PX} className="flex min-h-0 flex-col">
           <div className="flex h-9 shrink-0 items-center justify-between border-b border-line px-1">
             <div className="flex min-w-0 items-center gap-1.5">
               {!railOpen ? railToggle : null}
@@ -274,6 +281,7 @@ export function AppShell({
           panelRef={explorerRef}
           defaultSize={initial?.explorer ?? EXPLORER_DEFAULT_PX}
           minSize={EXPLORER_MIN_PX}
+          maxSize={EXPLORER_MAX_PX}
           collapsedSize={0}
           collapsible
           onResize={(_, id) => {
