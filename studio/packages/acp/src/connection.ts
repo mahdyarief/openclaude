@@ -179,6 +179,10 @@ export type AgentStatusSnapshot = {
   branch: string | null
   worktree: { name: string | null; path: string | null; branch: string | null } | null
   permissionMode: string
+  /** Active reasoning/effort level shown by the terminal statusline. */
+  effort: string | null
+  /** Custom plugin statusline content (e.g. Oh-my-Claude HUD / graft HUD). */
+  statusLineText: string | null
   contextWindow: { usedPercent: number; tokens: number; size: number } | null
   session: { name: string | null; costUsd: number; durationMs: number }
   backgroundTasks: { total: number; running: number; labels: string[] }

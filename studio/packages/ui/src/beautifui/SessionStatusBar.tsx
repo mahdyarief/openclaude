@@ -4,13 +4,12 @@ import { Badge } from '../shadcn/badge.js'
 import { cn } from '../lib/cn.js'
 
 /** One badge per live statusline field. The strip mirrors what the terminal
- *  statusline renders (model, branch, context, background tasks) so the web
- *  composer is never blind to the agent's live state. */
+ * statusline renders (model, branch, effort, context, background tasks, custom
+ * plugin content) so the web composer is never blind to the agent's live state.
+ * It sits directly below the prompt bar, mirroring the terminal's bottom row. */
 export type SessionStatusBarProps = {
   /** Live statusline snapshot; `null` while no session exists yet. */
   status: AgentStatusSnapshot | null
-  /** Optional override for the permission mode label (e.g. "plan"). */
-  permissionLabel?: string
   className?: string
 }
 
@@ -35,11 +34,7 @@ function contextVariant(pct: number): 'default' | 'warning' | 'danger' {
   return 'default'
 }
 
-export function SessionStatusBar({
-  status,
-  permissionLabel,
-  className,
-}: SessionStatusBarProps) {
+export function SessionStatusBar({ status, className }: SessionStatusBarProps) {
   if (!status) {
     return (
       <div
@@ -60,43 +55,49 @@ export function SessionStatusBar({
   return (
     <div
       className={cn(
-        'flex min-h-7 flex-wrap items-center gap-x-2 gap-y-1 border-t border-line bg-canvas px-2 py-1 text-[11px] text-ink-2',
+        'flex min-h-7 flex-col border-t border-line bg-canvas px-2 py-1 text-[11px] text-ink-3',
         className,
       )}
     >
-      <Badge variant="accent">{status.model.displayName}</Badge>
-      {branch ? (
-        <>
-          <Separator orientation="vertical" className="h-3" />
-          <Badge variant="default">{branch}</Badge>
-        </>
-      ) : null}
-      {permissionLabel ? (
-        <>
-          <Separator orientation="vertical" className="h-3" />
-          <Badge variant="default">{permissionLabel}</Badge>
-        </>
-      ) : null}
-      {context ? (
-        <>
-          <Separator orientation="vertical" className="h-3" />
-          <Badge variant={contextVariant(context.usedPercent)}>
-            ctx {context.usedPercent}%
-          </Badge>
-        </>
-      ) : null}
-      {tasks.total > 0 ? (
-        <>
-          <Separator orientation="vertical" className="h-3" />
-          <Badge variant={tasks.running > 0 ? 'warning' : 'default'}>
-            {tasks.running > 0 ? 'running' : 'done'} {tasks.running}/{tasks.total}
-          </Badge>
-        </>
-      ) : null}
-      <Separator orientation="vertical" className="h-3" />
-      <Badge variant="default">
-        {formatCost(status.session.costUsd)} · {formatDuration(status.session.durationMs)}
-      </Badge>
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <Badge variant="outline">{status.model.displayName}</Badge>
+        {branch && (
+          <>
+            <Separator orientation="vertical" className="h-3" />
+            <Badge variant="default">{branch}</Badge>
+          </>
+        )}
+        {status.effort && (
+          <>
+            <Separator orientation="vertical" className="h-3" />
+            <Badge variant="default">effort {status.effort}</Badge>
+          </>
+        )}
+        {context && (
+          <>
+            <Separator orientation="vertical" className="h-3" />
+            <Badge variant={contextVariant(context.usedPercent)}>
+              ctx {context.usedPercent}%
+            </Badge>
+          </>
+        )}
+        <Separator orientation="vertical" className="h-3" />
+        <Badge variant="outline">{formatCost(status.session.costUsd)}</Badge>
+        <Badge variant="outline">{formatDuration(status.session.durationMs)}</Badge>
+        {tasks.total > 0 && (
+          <>
+            <Separator orientation="vertical" className="h-3" />
+            <Badge variant={tasks.running > 0 ? 'warning' : 'default'}>
+              running {tasks.running}/{tasks.total}
+            </Badge>
+          </>
+        )}
+      </div>
+      {status.statusLineText && (
+        <div className="truncate text-ink-3" title={status.statusLineText}>
+          {status.statusLineText}
+        </div>
+      )}
     </div>
   )
 }

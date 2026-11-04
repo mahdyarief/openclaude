@@ -8,6 +8,8 @@ const snapshot: AgentStatusSnapshot = {
   branch: 'feat/oc-studio',
   worktree: null,
   permissionMode: 'default',
+  effort: 'low',
+  statusLineText: null,
   contextWindow: { usedPercent: 42, tokens: 84_000, size: 200_000 },
   session: { name: 'Test session', costUsd: 0.25, durationMs: 90_000 },
   backgroundTasks: { total: 0, running: 0, labels: [] },
@@ -23,6 +25,7 @@ describe('SessionStatusBar', () => {
     const html = renderToStaticMarkup(<SessionStatusBar status={snapshot} />)
     expect(html).toContain('Sonnet 4.5')
     expect(html).toContain('feat/oc-studio')
+    expect(html).toContain('effort low')
     expect(html).toContain('ctx 42%')
     expect(html).toContain('$0.2500')
     expect(html).toContain('1m')

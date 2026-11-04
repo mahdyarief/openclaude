@@ -501,10 +501,6 @@ function SessionPane({
         fetchConfig={getConfig}
         patchConfig={setConfig}
       />
-      <SessionStatusBar
-        status={statusSnapshot}
-        permissionLabel={PERMISSION_MODE_LABELS[permissionMode]}
-      />
       <PromptBar
         value={draft}
         onChange={next => {
@@ -536,6 +532,7 @@ function SessionPane({
           }
         }}
       />
+      <SessionStatusBar status={statusSnapshot} />
     </ChatPane>
   )
 }
