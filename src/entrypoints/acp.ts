@@ -28,6 +28,7 @@ import {
   ANTHROPIC_DEFAULT_PROFILE_ID,
 } from '../utils/providerProfiles.js'
 import { getInitialMainLoopModel, setMainLoopModelOverride } from '../bootstrap/state.js'
+import { buildConfigSettings } from '../utils/studioConfigSurface.js'
 
 /**
  * Tool permission mode. The default is `bypassPermissions` so the agent can
@@ -486,6 +487,15 @@ export function createAcpServer(
     }))
     const activeProfile = getActiveProviderProfile()
 
+    const settings = buildConfigSettings().map(setting => ({
+      id: setting.id,
+      type: setting.type,
+      label: setting.label,
+      description: setting.description,
+      ...(setting.options ? { options: setting.options } : {}),
+      value: setting.read(),
+    }))
+
     return {
       model: {
         active: activeModel ?? null,
@@ -506,6 +516,7 @@ export function createAcpServer(
         activeId: activeProfile?.id ?? null,
         profiles,
       },
+      settings,
     }
   }
 
@@ -544,6 +555,19 @@ export function createAcpServer(
         clearActiveProviderProfile()
       } else {
         setActiveProviderProfile(id)
+      }
+    }
+
+    // Generic settings surface — a flat map of settingId → value. Boolean
+    // values toggle, enum values select; unknown ids are ignored. Reads come
+    // from the same source the web panel renders, so the two stay in sync.
+    if (params.settings && typeof params.settings === 'object') {
+      const registry = buildConfigSettings()
+      const byId = new Map(registry.map(setting => [setting.id, setting]))
+      for (const [id, value] of Object.entries(params.settings as Record<string, unknown>)) {
+        const setting = byId.get(id)
+        if (!setting) continue
+        setting.write(value)
       }
     }
 

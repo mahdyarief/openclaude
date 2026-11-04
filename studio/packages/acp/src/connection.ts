@@ -125,12 +125,27 @@ export type AgentConfigSnapshot = {
       baseUrl?: string
     }>
   }
+  /** The full agent settings surface rendered by `/config`. */
+  settings: AgentSetting[]
+}
+
+export type AgentSetting = {
+  id: string
+  type: 'boolean' | 'enum'
+  label: string
+  description: string
+  /** Present for enum settings. */
+  options?: string[]
+  /** Current value; booleans are true/false, enums are strings. */
+  value: unknown
 }
 
 export type AgentConfigPatch = {
   model?: string
   theme?: string
   provider?: string
+  /** Flat map of setting id → new value. */
+  settings?: Record<string, unknown>
 }
 
 const CONFIG_METHOD = 'openclaude/config'

@@ -52,6 +52,7 @@ export function ConfigDialog({
     model?: string;
     theme?: string;
     provider?: string;
+    settings?: Record<string, unknown>;
   }) => {
     if (!patchConfig) return;
     setSaving(true);

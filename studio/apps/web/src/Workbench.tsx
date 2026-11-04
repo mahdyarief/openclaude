@@ -382,7 +382,7 @@ function SessionPane({
   const [draft, setDraft] = useState('')
   const [configOpen, setConfigOpen] = useState(false)
   const [configSection, setConfigSection] =
-    useState<"model" | "theme" | "provider" | "all">("all")
+    useState<"model" | "theme" | "provider" | "settings" | "all">("all")
 
   useEffect(() => {
     // A failed stored connection falls back to the connect screen automatically.
