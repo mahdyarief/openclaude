@@ -6,11 +6,14 @@ import { ChevronLeft, ChevronRight, FileText, MessageSquare, X } from "lucide-re
 import { cn } from "../lib/cn.js";
 import { Tabs, TabsList, TabsTrigger } from "../shadcn/tabs.js";
 import { Button } from "../shadcn/button.js";
+import type { ConnectionStatus } from "@openclaude-studio/acp";
 
 export type SessionTabItem = {
   tabId: string;
   title: string;
   kind: "session" | "document";
+  /** connection status of the session, if known */
+  status?: ConnectionStatus;
 };
 
 export type SessionTabsProps = {
@@ -105,6 +108,24 @@ export function SessionTabs({ tabs, activeId, onActivate, onClose }: SessionTabs
                 >
                   <Icon size={13} className="shrink-0 text-ink-3" aria-hidden />
                   <span className="truncate">{tab.title}</span>
+                  {tab.status && tab.status !== "ready" ? (
+                    <span
+                      aria-hidden
+                      title={
+                        tab.status === "idle"
+                          ? "Asleep — click to wake"
+                          : tab.status === "connecting"
+                            ? "Connecting"
+                            : "Disconnected"
+                      }
+                      className={cn(
+                        "size-1.5 shrink-0 rounded-full",
+                        tab.status === "idle" && "bg-ink-3",
+                        tab.status === "connecting" && "animate-pulse bg-orange",
+                        tab.status === "dead" && "bg-red",
+                      )}
+                    />
+                  ) : null}
                 </TabsTrigger>
                 <Button
                   type="button"

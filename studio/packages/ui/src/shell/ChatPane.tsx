@@ -8,6 +8,7 @@ import type {
 } from '@openclaude-studio/acp'
 import { LoadingState, QuestionPanel } from '../beautifui/index.js'
 import { cn } from '../lib/cn.js'
+import { Button } from '../shadcn/button.js'
 import { Skeleton } from '../shadcn/skeleton.js'
 import { MessageList } from './MessageList.js'
 
@@ -27,6 +28,14 @@ export type ChatPaneProps = {
   onAnswer?: (answers: Record<string, string>) => void
   /** dismiss the pending questions without answering */
   onDismissQuestions?: () => void
+  /** re-handshake from scratch (new WebSocket + session handshake/load) */
+  onReload?: () => void
+  /** end the live connection; the transcript stays visible */
+  onEnd?: () => void
+  /** true while a reload is re-establishing the handshake */
+  reloading?: boolean
+  /** true after the user ended the session */
+  ended?: boolean
   /** composer pinned to the bottom */
   children?: ReactNode
 }
@@ -37,6 +46,24 @@ const STOP_LABELS: Record<StopReason, string> = {
   max_turn_requests: 'Hit turn limit',
   refusal: 'Refused',
   cancelled: 'Cancelled',
+}
+
+// One line of status text per connection state, so the pane is never ambiguous:
+// ready/connecting are normal, idle is "asleep" (reloaded on focus), dead is
+// unrecoverable. The composer stays usable in `idle` because the next prompt
+// reattaches automatically.
+const STATUS_LABELS: Record<ConnectionStatus, string> = {
+  ready: 'Connected',
+  connecting: 'Connecting to agent…',
+  idle: 'Asleep — connection paused to save resources',
+  dead: 'Disconnected',
+}
+
+const STATUS_TONE: Record<ConnectionStatus, { dot: string; tint: string }> = {
+  ready: { dot: 'bg-green', tint: 'bg-green-tint' },
+  connecting: { dot: 'animate-pulse bg-orange', tint: 'bg-orange-tint' },
+  idle: { dot: 'bg-ink-3', tint: 'bg-inset' },
+  dead: { dot: 'bg-red', tint: 'bg-red-tint' },
 }
 
 export function ChatPane({
@@ -50,22 +77,62 @@ export function ChatPane({
   questions,
   onAnswer,
   onDismissQuestions,
+  onReload,
+  onEnd,
+  reloading,
+  ended,
   children,
 }: ChatPaneProps) {
   const stopLabel = stopReason ? (STOP_LABELS[stopReason] ?? stopReason) : null
-  const offline = status !== 'ready'
+  const tone = STATUS_TONE[status]
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {offline ? (
-        <div
-          role="status"
-          className="flex shrink-0 items-center gap-2 border-b border-line bg-orange-tint px-4 py-1.5 text-[12px] text-ink-2"
-        >
-          <span aria-hidden className="size-1.5 rounded-full bg-orange" />
-          {status === 'connecting' ? 'Connecting to agent…' : status}
-        </div>
-      ) : null}
+      <div
+        role="status"
+        className={cn(
+          'flex shrink-0 items-center gap-2 border-b border-line px-4 py-1.5 text-[12px] text-ink-2',
+          tone.tint,
+        )}
+      >
+        <span aria-hidden className={cn('size-1.5 rounded-full', tone.dot)} />
+        <span className="truncate">{STATUS_LABELS[status]}</span>
+        {status === 'idle' ? (
+          <Button
+            variant="quiet"
+            size="sm"
+            onClick={onReload}
+            disabled={reloading}
+            className="ml-auto h-5 rounded-[var(--radius-control)] px-1.5 text-[11px]"
+          >
+            {reloading ? 'Waking…' : 'Wake'}
+          </Button>
+        ) : null}
+        {status === 'dead' ? (
+          <Button
+            variant="quiet"
+            size="sm"
+            onClick={onReload}
+            disabled={reloading}
+            className="ml-auto h-5 rounded-[var(--radius-control)] px-1.5 text-[11px]"
+          >
+            {reloading ? 'Reconnecting…' : 'Reconnect'}
+          </Button>
+        ) : null}
+        {!ended && (status === 'ready' || status === 'idle') ? (
+          <Button
+            variant="quiet"
+            size="sm"
+            onClick={onEnd}
+            className="ml-2 h-5 rounded-[var(--radius-control)] px-1.5 text-[11px]"
+          >
+            End session
+          </Button>
+        ) : null}
+        {ended && status === 'idle' ? (
+          <span className="ml-2 text-[11px] text-ink-3">Ended</span>
+        ) : null}
+      </div>
 
       <div className="min-h-0 flex-1">
         {loadingHistory ? (

@@ -28,6 +28,10 @@ export type AgentSessionOptions = {
   sessionId?: string
   /** forwarded to `session/new`/`session/load` so the agent uses the chosen mode */
   permissionMode?: string
+  /** whether this tab is visible; hidden idle tabs are allowed to soft-close */
+  active?: boolean
+  /** how long a hidden, finished session may keep its agent socket open */
+  idleTimeoutMs?: number
 }
 
 export type SessionMode =
@@ -38,6 +42,30 @@ export function sessionMode(sessionId: string | undefined): SessionMode {
   return sessionId ? { kind: 'load', sessionId } : { kind: 'new' }
 }
 
+export type IdleGateInput = {
+  status: ConnectionStatus
+  streaming: boolean
+  /** waiting for the first chunk of a turn */
+  awaiting: boolean
+  /** an unanswered permission or question keeps the agent's turn open */
+  permissionPending: boolean
+  /** whether the tab is the visible one */
+  active: boolean
+}
+
+// Soft-idle may only close the agent socket when the agent has finished acting:
+// a streaming turn, an unanswered prompt, or a pending permission keep the
+// connection open even if the tab was left in the background.
+export function mayEnterIdle(input: IdleGateInput): boolean {
+  return (
+    !input.active &&
+    input.status === 'ready' &&
+    !input.streaming &&
+    !input.awaiting &&
+    !input.permissionPending
+  )
+}
+
 type AgentSession = {
   state: SessionState
   status: ConnectionStatus
@@ -46,10 +74,25 @@ type AgentSession = {
   awaiting: boolean
   /** true while the stored transcript is being read back from the bridge on a load */
   loadingHistory: boolean
+  /**
+   * True after the user ended the session. `status` is then 'idle', which also
+   * covers an automatic soft-idle; `ended` distinguishes the manual case so the
+   * pane can say "session ended" instead of "asleep".
+   */
+  ended: boolean
+  /** true while a manual reload is re-handshaking with the agent */
+  reloading: boolean
   sessionId: string | null
   sendPrompt: (text: string) => void
   cancel: () => void
+  /** Lazily start the session if it does not yet exist. */
   ensureSession: () => Promise<string | null>
+  /** Reattach after a soft-idle or refresh a healthy connection. */
+  reconnect: () => void
+  /** Re-handshake from scratch (new WebSocket + fresh session handshake). */
+  reload: () => void
+  /** Tear down the agent connection; the tab keeps showing the last transcript. */
+  disconnect: () => void
   pendingPermission: PermissionRequest | null
   /** resolve the pending permission; pass answers for `AskUserQuestion` */
   respondPermission: (optionId: string | null, answers?: Record<string, string> | null) => void
@@ -66,13 +109,23 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function useAgentSession(options: AgentSessionOptions): AgentSession {
-  const { url, token, cwd, sessionId, permissionMode } = options
+  const {
+    url,
+    token,
+    cwd,
+    sessionId,
+    permissionMode,
+    active = true,
+    idleTimeoutMs = 5 * 60_000,
+  } = options
   // Read at session/new and session/load time. Kept in a ref so flipping the
   // mode does not tear down a live connection mid-turn.
   const permissionModeRef = useRef(permissionMode)
   permissionModeRef.current = permissionMode
   const [state, setState] = useState<SessionState>(() => emptySession('', ''))
-  const [status, setStatus] = useState<ConnectionStatus>('connecting')
+  // A pane that mounts hidden (restored background tab) starts asleep instead of
+  // connecting, so it does not spawn a bridge agent child until it is viewed.
+  const [status, setStatus] = useState<ConnectionStatus>(active ? 'connecting' : 'idle')
   const [error, setError] = useState<string | null>(null)
   const [pendingPermission, setPendingPermission] = useState<PermissionRequest | null>(null)
   const [activeSessionId, setActiveSessionId] = useState<string | null>(sessionId ?? null)
@@ -81,7 +134,13 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
   // on a `session/load`. The chat area shows a loading state instead of an
   // empty transcript so the gap does not read as "no history".
   const [loadingHistory, setLoadingHistory] = useState(false)
-
+  // Soft-idle and manual end both close the agent WebSocket while keeping the
+  // transcript: `status` becomes 'idle' (asleep, not dead). `ended` marks the
+  // manual case so the pane can label it "session ended" rather than "asleep".
+  const [ended, setEnded] = useState(false)
+  // True while a manual reload is re-establishing the handshake; the pane shows
+  // an explicit "Reloading…" state so the action is never silent.
+  const [reloading, setReloading] = useState(false)
   const handleRef = useRef<AgentConnectionHandle | null>(null)
   const handshakeRef = useRef<AgentHandshake | null>(null)
   // Guards against a stale (already-finished) handshake's `connect` resolving
@@ -175,6 +234,7 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
     setActiveSessionId(id)
     setState(nextStore.getState())
     setStatus('ready')
+    setEnded(false)
   }, [])
 
   const connect = useCallback(async () => {
@@ -185,7 +245,9 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
     setError(null)
     updateChain.current = Promise.resolve()
 
-    const mode = sessionMode(sessionId)
+    // Reattach must resume the session this hook already owns (after a soft-idle
+    // or a reload), not the id the pane originally mounted with.
+    const mode = sessionMode(sessionIdRef.current ?? sessionId)
     const store = createSessionStore(
       mode.kind === 'load' ? mode.sessionId : '',
       cwd,
@@ -293,8 +355,68 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
     }
   }, [url, token, cwd, sessionId, applyUpdate, requestPermission, adoptSession])
 
+  // Close the agent socket to free the bridge child process, but keep the
+  // transcript and session identity. The next prompt reattaches via `reconnect`.
+  const softClose = useCallback(() => {
+    handleRef.current?.disconnect()
+    handleRef.current = null
+    handshakeRef.current?.close()
+    handshakeRef.current = null
+    // Keep `sessionIdRef`: reconnect must `session/load` the same transcript,
+    // not start a new empty session.
+    creatingRef.current = null
+    setStatus('idle')
+  }, [])
+
+  // Reattach the agent for the current session id without losing the transcript.
+  // Used when a backgrounded tab is brought back, or before a prompt that needs
+  // the agent after a soft-idle. Resolves once the reconnect has settled.
+  const reconnect = useCallback(async (): Promise<void> => {
+    if (status !== 'idle') return
+    setEnded(false)
+    await connect()
+  }, [status, connect])
+
+  // Full re-handshake: tear down whatever connection exists and start `connect`
+  // from scratch (new WebSocket + fresh session handshake or load).
+  const reload = useCallback(() => {
+    connectNonce.current += 1
+    handleRef.current?.disconnect()
+    handleRef.current = null
+    handshakeRef.current?.close()
+    handshakeRef.current = null
+    creatingRef.current = null
+    setStatus('connecting')
+    setEnded(false)
+    setReloading(true)
+    void connect().then(() => setReloading(false))
+  }, [connect])
+
+  // Soft-idle: a backgrounded tab whose agent has finished its turn closes its
+  // socket to free the bridge child process. A streaming turn or a pending
+  // permission must keep the socket — the user may have walked away mid-run and
+  // the agent must keep going.
+  useEffect(() => {
+    if (!mayEnterIdle({
+      status,
+      streaming: state.streaming,
+      awaiting,
+      permissionPending: pendingPermission !== null,
+      active,
+    })) {
+      return
+    }
+    const timer = setTimeout(softClose, idleTimeoutMs)
+    return () => clearTimeout(timer)
+  }, [status, state.streaming, awaiting, pendingPermission, active, idleTimeoutMs, softClose])
+
+  // A pane that mounts hidden starts asleep (`status` is 'idle' from init) and
+  // connects the first time it becomes active. The mount effect itself only runs
+  // once — visibility changes must never tear the socket down while the agent is
+  // still streaming; soft-idle owns that decision.
   useEffect(() => {
     mountedRef.current = true
+    if (!active) return
     void connect()
     return () => {
       mountedRef.current = false
@@ -307,7 +429,22 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
       handshakeRef.current = null
       creatingRef.current = null
     }
+    // `connect` changes when its inputs change (e.g. a real session id was
+    // renamed); that legitimately re-runs the connection. `active` is read via
+    // the guard below, not as a teardown trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connect])
+
+  // First activation of a hidden-mounted pane, and reattach of a soft-idled
+  // session: bringing the tab back reconnects on its own so the user does not
+  // have to press anything. A manually ended session stays ended until the user
+  // explicitly reloads or sends a prompt.
+  useEffect(() => {
+    if (!active || status !== 'idle') return
+    if (ended) return
+    void reconnect()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, status])
 
   // Lazily start a new session. Idempotent: if a session id already exists
   // (loaded or previously created) it is returned without another call, and
@@ -378,6 +515,9 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
 
   const sendPrompt = useCallback((text: string) => {
     void (async () => {
+      // A soft-idled session must reattach before the prompt can be delivered;
+      // the transcript already on screen is preserved by the reconnect.
+      await reconnect()
       const id = await ensureSession()
       if (!id) return
       const handle = handleRef.current
@@ -430,7 +570,7 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
           setError(cause instanceof Error ? cause.message : String(cause))
         })
     })()
-  }, [ensureSession])
+  }, [ensureSession, reconnect])
 
   const cancel = useCallback(() => {
     const handle = handleRef.current
@@ -439,6 +579,23 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
     void handle.connection.agent.request('session/cancel', {
       sessionId: handle.sessionId,
     })
+  }, [])
+
+  // End the live connection but keep the tab and its transcript. Distinct from
+  // soft-idle: the user asked for it, so it happens immediately rather than
+  // after the idle delay, and the pane reports it as "session ended".
+  const disconnect = useCallback(() => {
+    connectNonce.current += 1
+    handleRef.current?.disconnect()
+    handleRef.current = null
+    handshakeRef.current?.close()
+    handshakeRef.current = null
+    // Keep `sessionIdRef` so "reload" can resume this same transcript.
+    creatingRef.current = null
+    setAwaiting(false)
+    setReloading(false)
+    setStatus('idle')
+    setEnded(true)
   }, [])
 
   // A loaded session only keeps a handle (no handshake), while a fresh session
@@ -476,10 +633,15 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
     error,
     awaiting,
     loadingHistory,
+    ended,
+    reloading,
     sessionId: activeSessionId,
     sendPrompt,
     cancel,
     ensureSession,
+    reconnect,
+    reload,
+    disconnect,
     pendingPermission,
     respondPermission,
     getConfig,

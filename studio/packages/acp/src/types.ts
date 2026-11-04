@@ -74,7 +74,7 @@ export type SessionState = {
   notice: { severity: string; title: string; description?: string | null } | null
 }
 
-export type ConnectionStatus = 'idle' | 'connecting' | 'ready' | 'dead'
+export type ConnectionStatus = 'connecting' | 'ready' | 'dead' | 'idle'
 
 export type ConnectionState = {
   status: ConnectionStatus

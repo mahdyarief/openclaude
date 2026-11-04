@@ -81,6 +81,33 @@ refreshing the page no longer spams empty session files.
 
 The active project is remembered in `localStorage` (`openclaude.project`).
 
+## Session connection status
+
+Each session tab shows its live connection state in a status bar at the top of
+the chat pane and as a dot on the tab itself, so you are never blind about
+whether the agent is reachable:
+
+- **Connected** (green) — the agent socket is open and ready.
+- **Connecting to agent…** (pulsing orange) — the handshake or session load is in
+  flight. The composer stays disabled until this clears, which is why the first
+  prompt in a freshly opened session can feel slow: the pane must finish the
+  agent handshake *and* replay the saved transcript before it accepts input.
+- **Asleep** (grey) — the tab was backgrounded after the agent finished its turn,
+  so Studio soft-closed the WebSocket to free the bridge's agent process while
+  keeping the transcript on disk. This is the resource-saving idle state, and it
+  is never triggered while the agent is still streaming, awaiting a tool
+  permission, or waiting on an `AskUserQuestion` answer — the socket stays open
+  in those cases even if you leave the tab. Resuming the tab (or sending the next
+  prompt) automatically reopens the connection; a **Wake** button is also shown.
+- **Disconnected** (red) — the agent is unreachable. A **Reconnect** button
+  re-handshakes from scratch.
+
+Use **End session** (visible while Connected/Asleep) to drop the live connection
+on purpose; the transcript remains visible and **Reload** reattaches it.
+
+A freshly restored background tab mounts asleep on purpose so it does not spawn
+an agent process until you actually view it.
+
 ## Project and session endpoints
 
 The bridge serves both, token-gated the same way as `/fs` (query `?token=` or

@@ -16,6 +16,7 @@ import {
   PERMISSION_MODE_LABELS,
   PERMISSION_MODES,
   isPermissionMode,
+  type ConnectionStatus,
   type PermissionMode,
 } from '@openclaude-studio/acp'
 import type { BridgeConfig } from './bridge-config.js'
@@ -24,6 +25,7 @@ import { useAgentSession } from './use-agent-session.js'
 import { useFileContent, useFileTree } from './use-file-tree.js'
 import { groupSessions, useProjectSessions } from './use-projects.js'
 import { useTabs, type Tab } from './use-tabs.js'
+import { usePageVisibility } from './use-page-visibility.js'
 import { useWorkspaceSessions } from './use-workspace-sessions.js'
 import { useMetrics } from './use-metrics.js'
 
@@ -65,6 +67,10 @@ export function Workbench({
   onConnectionFailed?: (() => void) | undefined
 }) {
   const { tabs, activeId, openTab, closeTab, activate, renameTab } = useTabs()
+  const tabVisible = usePageVisibility()
+  // Per-pane connection status, keyed by tab id, so the tab strip can show a
+  // status dot and the pane can label its own state.
+  const [statusByTab, setStatusByTab] = useState<Record<string, ConnectionStatus>>({})
   const { sessions, loading: sessionsLoading, error: sessionsError, refresh } = useProjectSessions(
     config.url,
     config.token,
@@ -250,6 +256,7 @@ export function Workbench({
             tabId: tab.tabId,
             title: tab.title,
             kind: tab.kind,
+            ...(statusByTab[tab.tabId] ? { status: statusByTab[tab.tabId] } : {}),
           }))}
           activeId={activeId}
           onActivate={activate}
@@ -283,7 +290,16 @@ export function Workbench({
                   cwd={tab.cwd}
                   sessionId={tab.sessionId?.startsWith('new-') ? undefined : tab.sessionId}
                   permissionMode={permissionMode}
+                  // Only the visible pane is "active": hidden tabs may soft-idle
+                  // their finished sessions, and the page-level visibility gates
+                  // backgrounded browser tabs entirely.
+                  active={visible && tabVisible}
                   onPermissionModeChange={onPermissionModeChange}
+                  onStatusChange={next =>
+                    setStatusByTab(prev =>
+                      prev[tab.tabId] === next ? prev : { ...prev, [tab.tabId]: next },
+                    )
+                  }
                   onSessionCreated={realId => handleSessionCreated(tab.tabId, realId, tab.cwd)}
                   onConnectionFailed={onConnectionFailed}
                 />
@@ -312,6 +328,8 @@ function SessionPane({
   cwd,
   sessionId,
   permissionMode,
+  active,
+  onStatusChange,
   onPermissionModeChange,
   onSessionCreated,
   onConnectionFailed,
@@ -321,6 +339,10 @@ function SessionPane({
   sessionId?: string | undefined
   /** current agent permission mode, server-backed */
   permissionMode: PermissionMode
+  /** whether this pane is the visible one (gates soft-idle) */
+  active: boolean
+  /** report the pane's connection status up to the tab strip */
+  onStatusChange?: (status: ConnectionStatus) => void
   /** change the permission mode (persisted to the bridge) */
   onPermissionModeChange: (mode: PermissionMode) => void
   onSessionCreated: (realId: string) => void
@@ -336,9 +358,14 @@ function SessionPane({
     error,
     awaiting,
     loadingHistory,
+    ended,
+    reloading,
     sendPrompt,
     cancel,
     ensureSession,
+    reconnect,
+    reload,
+    disconnect,
     pendingPermission,
     respondPermission,
     getConfig,
@@ -350,6 +377,7 @@ function SessionPane({
     // Build the options object conditionally — exactOptionalPropertyTypes is on.
     ...(initialSessionId ? { sessionId: initialSessionId } : {}),
     permissionMode,
+    active,
   })
   const [draft, setDraft] = useState('')
   const [configOpen, setConfigOpen] = useState(false)
@@ -361,7 +389,18 @@ function SessionPane({
     if (status === 'dead') onConnectionFailed?.()
   }, [status, onConnectionFailed])
 
-  const disabled = status !== 'ready'
+  // Surface the pane's connection status to the tab strip dot. Only fire when it
+  // actually changes so the parent state update is idempotent.
+  const lastStatusRef = useRef<ConnectionStatus | null>(null)
+  useEffect(() => {
+    if (lastStatusRef.current === status) return
+    lastStatusRef.current = status
+    onStatusChange?.(status)
+  }, [status, onStatusChange])
+
+  // An idle (asleep) session stays typeable: sending a prompt reattaches the
+  // agent automatically, so the user never waits on a manual reconnect first.
+  const disabled = status !== 'ready' && status !== 'idle'
 
   async function submit() {
     const text = draft.trim()
@@ -396,6 +435,10 @@ function SessionPane({
       questions={pendingPermission?.questions ?? null}
       onAnswer={answers => respondPermission('allow', answers)}
       onDismissQuestions={() => respondPermission(null)}
+      onReload={reload}
+      onEnd={disconnect}
+      reloading={reloading}
+      ended={ended}
     >
       {pendingPermission && !pendingPermission.questions?.length ? (
         <div
