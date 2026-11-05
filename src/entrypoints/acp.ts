@@ -93,7 +93,6 @@ type AcpWriter = (message: JsonRpcResponse | { jsonrpc: '2.0'; method: string; p
 
 type AcpToolKind =
   | 'read'
-  | 'write'
   | 'edit'
   | 'delete'
   | 'move'
@@ -104,6 +103,33 @@ type AcpToolKind =
   | 'switch_mode'
   | 'other'
 
+type AcpTextContentBlock = {
+  type: 'content'
+  content: { type: 'text'; text: string }
+}
+
+type AcpDiffContent = {
+  type: 'diff'
+  path: string
+  oldText?: string | null
+  newText: string
+}
+
+type AcpTerminalContent = {
+  type: 'terminal'
+  terminalId: string
+}
+
+type AcpToolCallContent =
+  | AcpTextContentBlock
+  | AcpDiffContent
+  | AcpTerminalContent
+
+type AcpToolCallLocation = {
+  path: string
+  line?: number | null
+}
+
 type AcpToolCallUpdate = {
   sessionUpdate: 'tool_call'
   toolCallId: string
@@ -111,13 +137,15 @@ type AcpToolCallUpdate = {
   kind: AcpToolKind
   status: 'in_progress'
   rawInput: Record<string, unknown>
+  locations?: AcpToolCallLocation[]
+  content?: AcpToolCallContent[]
 }
 
 type AcpToolCallResultUpdate = {
   sessionUpdate: 'tool_call_update'
   toolCallId: string
   status: 'completed' | 'failed'
-  content?: Array<{ type: 'content'; content: { type: 'text'; text: string } }>
+  content?: AcpToolCallContent[]
   rawOutput: unknown
 }
 
@@ -485,6 +513,97 @@ function toolResultText(content: unknown): string {
     .join('\n')
 }
 
+function toolKindFor(name: string): AcpToolKind {
+  switch (name) {
+    case 'Read':
+      return 'read'
+    case 'Edit':
+    case 'Write':
+    case 'NotebookEdit':
+      return 'edit'
+    case 'Bash':
+    case 'PowerShell':
+    case 'BashOutput':
+    case 'KillShell':
+      return 'execute'
+    case 'Grep':
+    case 'Glob':
+    case 'WebSearch':
+    case 'ToolSearch':
+      return 'search'
+    case 'WebFetch':
+      return 'fetch'
+    case 'EnterPlanMode':
+    case 'ExitPlanMode':
+      return 'switch_mode'
+    case 'Task':
+      return 'think'
+    default:
+      return 'other'
+  }
+}
+
+// Structural blocks describe the call, not its result, so they are derived
+// purely from the tool input. ACP's tool_call_update.content *replaces* the
+// array; the client reducer re-attaches these blocks when the result arrives.
+function toolPresentationFor(
+  name: string,
+  toolCallId: string,
+  input: Record<string, unknown>,
+): { locations?: AcpToolCallLocation[]; content?: AcpToolCallContent[] } {
+  const str = (value: unknown): string | null =>
+    typeof value === 'string' ? value : null
+  const pathOf = (value: unknown): string | null => {
+    const path = str(value)
+    return path && path.length > 0 ? path : null
+  }
+
+  let diff: AcpDiffContent | null = null
+  let locations: AcpToolCallLocation[] | undefined
+
+  if (name === 'Edit' || name === 'Write' || name === 'NotebookEdit') {
+    const path = pathOf(name === 'NotebookEdit' ? input.notebook_path : input.file_path)
+    const newText =
+      name === 'Edit'
+        ? str(input.new_string)
+        : name === 'Write'
+          ? str(input.content)
+          : str(input.new_source)
+    if (path && newText !== null) {
+      diff = {
+        type: 'diff',
+        path,
+        oldText: name === 'Edit' ? str(input.old_string) : null,
+        newText,
+      }
+      locations = [{ path }]
+    }
+  } else if (name === 'Read') {
+    const path = pathOf(input.file_path)
+    if (path) locations = [{ path }]
+  } else if (name === 'Bash' || name === 'PowerShell') {
+    const sed = isRecord(input._simulatedSedEdit) ? input._simulatedSedEdit : null
+    const sedPath = sed ? pathOf(sed.filePath) : null
+    const sedText = sed ? str(sed.newContent) : null
+    if (sedPath && sedText !== null) {
+      diff = { type: 'diff', path: sedPath, oldText: null, newText: sedText }
+      locations = [{ path: sedPath }]
+    }
+    return {
+      ...(locations ? { locations } : {}),
+      content: [
+        ...(diff ? [diff] : []),
+        { type: 'terminal', terminalId: toolCallId },
+      ],
+    }
+  }
+
+  return {
+    ...(locations ? { locations } : {}),
+    ...(diff ? { content: [diff] } : {}),
+  }
+}
+
 // Every tool_use opens a tool_call and every tool_result closes it with a
 // tool_call_update. Without the closing update the client never learns a tool
 // finished and only sees its result after reloading history from disk.
@@ -496,14 +615,17 @@ export function toolUpdates(message: SDKMessage): AcpToolUpdate[] {
   if (message.type === 'assistant') {
     return content.filter(isRecord).flatMap((tool): AcpToolCallUpdate[] => {
       if (tool.type !== 'tool_use' || typeof tool.id !== 'string') return []
+      const name = typeof tool.name === 'string' ? tool.name : 'OpenClaude tool'
+      const input = isRecord(tool.input) ? tool.input : {}
       return [
         {
           sessionUpdate: 'tool_call',
           toolCallId: tool.id,
-          title: typeof tool.name === 'string' ? tool.name : 'OpenClaude tool',
-          kind: 'other',
+          title: name,
+          kind: toolKindFor(name),
           status: 'in_progress',
-          rawInput: isRecord(tool.input) ? tool.input : {},
+          rawInput: input,
+          ...toolPresentationFor(name, tool.id, input),
         },
       ]
     })
@@ -726,7 +848,7 @@ export function createAcpServer(
         toolCall: {
           toolCallId: message.tool_use_id,
           title: message.tool_name,
-          kind: 'other',
+          kind: toolKindFor(message.tool_name),
           rawInput: message.input,
         },
         options,

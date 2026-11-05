@@ -83,6 +83,100 @@ describe('applySessionUpdate', () => {
     expect(updated.messages[0]?.parts).toEqual([{ kind: 'tool', toolCallId: 't1' }])
   })
 
+  test('keeps a diff and its locations when a text result arrives', () => {
+    const created = applySessionUpdate(
+      base,
+      notification({
+        sessionUpdate: 'tool_call',
+        toolCallId: 't1',
+        title: 'Edit file',
+        kind: 'edit',
+        status: 'in_progress',
+        locations: [{ path: '/work/a.ts' }],
+        content: [
+          { type: 'diff', path: '/work/a.ts', oldText: 'old', newText: 'new' },
+        ],
+      }),
+    )
+    const updated = applySessionUpdate(
+      created,
+      notification({
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 't1',
+        status: 'completed',
+        content: [
+          { type: 'content', content: { type: 'text', text: 'File updated' } },
+        ],
+      }),
+    )
+
+    expect(updated.toolCalls.t1?.locations).toEqual([{ path: '/work/a.ts' }])
+    expect(updated.toolCalls.t1?.content).toEqual([
+      { type: 'diff', path: '/work/a.ts', oldText: 'old', newText: 'new' },
+      { type: 'content', content: { type: 'text', text: 'File updated' } },
+    ])
+  })
+
+  test('keeps a terminal block when the shell result arrives as text', () => {
+    const created = applySessionUpdate(
+      base,
+      notification({
+        sessionUpdate: 'tool_call',
+        toolCallId: 's1',
+        title: 'Bash',
+        kind: 'execute',
+        status: 'in_progress',
+        content: [{ type: 'terminal', terminalId: 's1' }],
+      }),
+    )
+    const updated = applySessionUpdate(
+      created,
+      notification({
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 's1',
+        status: 'completed',
+        content: [
+          { type: 'content', content: { type: 'text', text: 'ok' } },
+        ],
+      }),
+    )
+
+    expect(updated.toolCalls.s1?.content).toEqual([
+      { type: 'terminal', terminalId: 's1' },
+      { type: 'content', content: { type: 'text', text: 'ok' } },
+    ])
+  })
+
+  test('replaces structural blocks when an update carries its own', () => {
+    const created = applySessionUpdate(
+      base,
+      notification({
+        sessionUpdate: 'tool_call',
+        toolCallId: 't1',
+        title: 'Edit file',
+        status: 'in_progress',
+        content: [
+          { type: 'diff', path: '/work/a.ts', oldText: 'old', newText: 'new' },
+        ],
+      }),
+    )
+    const updated = applySessionUpdate(
+      created,
+      notification({
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 't1',
+        status: 'completed',
+        content: [
+          { type: 'diff', path: '/work/a.ts', oldText: 'old', newText: 'final' },
+        ],
+      }),
+    )
+
+    expect(updated.toolCalls.t1?.content).toEqual([
+      { type: 'diff', path: '/work/a.ts', oldText: 'old', newText: 'final' },
+    ])
+  })
+
   test('stores plan and usage without touching messages', () => {
     const withPlan = applySessionUpdate(
       base,

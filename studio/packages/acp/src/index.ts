@@ -9,6 +9,7 @@ export * from './project.js'
 // SDK directly. This is the single place that decides what the UI may know.
 export type {
   ContentBlock,
+  Diff,
   Plan,
   PlanEntry,
   PromptResponse,
@@ -18,7 +19,11 @@ export type {
   SessionModeState,
   SessionNotification,
   StopReason,
+  Terminal,
   ToolCall,
+  ToolCallContent,
+  ToolCallLocation,
   ToolCallUpdate,
+  ToolKind,
   UsageUpdate,
 } from '@agentclientprotocol/sdk'

@@ -1,10 +1,21 @@
 import type { ReactNode } from 'react'
-import type { ConversationMessage, ToolCall } from '@openclaude-studio/acp'
+import { ChevronDown } from 'lucide-react'
+import type {
+  ConversationMessage,
+  ToolCall,
+  ToolCallContent,
+} from '@openclaude-studio/acp'
 import ThinkingState from '../beautifui/ThinkingState.js'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { cn } from '../lib/cn.js'
 import { Badge } from '../shadcn/badge.js'
+import { Button } from '../shadcn/button.js'
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '../shadcn/collapsible.js'
 import { CommandChip, isCommandText, parseCommandInvocation } from './CommandChip.js'
 
 export type MessageBubbleProps = {
@@ -16,7 +27,62 @@ export type MessageBubbleProps = {
   lastAgentMessageId: string | null
 }
 
-const ENTRY = { animation: 'fade-up 260ms cubic-bezier(0.23,1,0.32,1) both' } as const
+type DiffBlock = Extract<ToolCallContent, { type: 'diff' }>
+type TerminalBlock = Extract<ToolCallContent, { type: 'terminal' }>
+
+function ToolDetail({
+  label,
+  defaultOpen = false,
+  children,
+}: {
+  label: string
+  defaultOpen?: boolean
+  children: ReactNode
+}) {
+  return (
+    <Collapsible defaultOpen={defaultOpen} className="w-full">
+      <CollapsibleTrigger asChild>
+        <Button
+          type="button"
+          variant="quiet"
+          size="sm"
+          className="group h-auto w-full justify-start gap-1 px-0 py-0 text-left font-sans text-[10.5px] font-normal text-ink-3 hover:text-ink"
+        >
+          <ChevronDown
+            size={11}
+            aria-hidden
+            className="shrink-0 transition-transform duration-200 group-data-[state=closed]:-rotate-90"
+          />
+          <span className="truncate">{label}</span>
+        </Button>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="w-full">
+        <div className="mt-1 w-full overflow-x-auto rounded-[var(--radius-control)] bg-inset px-2 py-1 text-[11px] leading-[1.4] text-ink-3">
+          {children}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  )
+}
+
+function DiffLines({ diff }: { diff: DiffBlock }) {
+  const removed = diff.oldText == null ? [] : diff.oldText.split('\n')
+  const added = diff.newText.split('\n')
+  return (
+    <pre className="flex flex-col gap-0.5 whitespace-pre-wrap break-words font-mono">
+      {removed.map((line, i) => (
+        <span key={`del-${i}`} className="block bg-red-tint text-red">
+          - {line}
+        </span>
+      ))}
+      {added.map((line, i) => (
+        <span key={`add-${i}`} className="block bg-green-tint text-green">
+          + {line}
+        </span>
+      ))}
+    </pre>
+  )
+}
 
 export function MessageBubble({
   message,
@@ -40,7 +106,7 @@ export function MessageBubble({
     const invocation = parseCommandInvocation(text)
 
     return (
-      <div data-role="user" className="flex w-full justify-end pl-10 sm:pl-20" style={ENTRY}>
+      <div data-role="user" className="flex w-full animate-fade-up justify-end pl-10 sm:pl-20">
         <div className="min-w-0 max-w-[85%] whitespace-pre-wrap break-words rounded-[var(--radius-window)] bg-field px-3.5 py-2 text-[13px] leading-[1.45] text-ink [overflow-wrap:anywhere]">
           {invocation ? (
             <span className="inline-flex flex-wrap items-center gap-1.5">
@@ -57,7 +123,7 @@ export function MessageBubble({
 
   // Agent turns read as a document section: a small label line, then content.
   return (
-    <article data-role="agent" className="flex min-w-0 w-full flex-col gap-2" style={ENTRY}>
+    <article data-role="agent" className="flex min-w-0 w-full animate-fade-up flex-col gap-2">
       <header className="flex items-center gap-1.5 text-[12px] leading-[1.3]">
         <span className="font-medium text-ink">OpenClaude</span>
         {showCaret ? <span className="text-ink-3">responding…</span> : null}
@@ -113,11 +179,7 @@ export function MessageBubble({
                   {part.text}
                 </ReactMarkdown>
                 {showCaret && index === message.parts.length - 1 ? (
-                  <span
-                    aria-hidden
-                    className="ml-0.5 inline-block h-[1em] w-[2px] translate-y-[2px] bg-ink"
-                    style={{ animation: 'caret-blink 1s steps(2, start) infinite' }}
-                  />
+                  <span aria-hidden className="stream-caret" />
                 ) : null}
               </div>,
             )
@@ -148,6 +210,12 @@ export function MessageBubble({
                 return c.content.text as string
               })
               .filter((v): v is string => !!v) ?? []
+          const diffBlocks: DiffBlock[] = (tc?.content ?? []).filter(
+            (c): c is DiffBlock => c.type === 'diff',
+          )
+          const terminalBlocks: TerminalBlock[] = (tc?.content ?? []).filter(
+            (c): c is TerminalBlock => c.type === 'terminal',
+          )
 
           chipRun.push(
             <span
@@ -166,25 +234,25 @@ export function MessageBubble({
                   </Badge>
                 ) : null}
               </span>
+              {diffBlocks.map((diff, i) => (
+                <ToolDetail key={`diff-${i}`} label={`diff ${diff.path}`} defaultOpen>
+                  <DiffLines diff={diff} />
+                </ToolDetail>
+              ))}
+              {terminalBlocks.map((terminal, i) => (
+                <ToolDetail key={`terminal-${i}`} label={`terminal ${terminal.terminalId}`}>
+                  <span>terminal {terminal.terminalId}</span>
+                </ToolDetail>
+              ))}
               {argsJson ? (
-                <details className="w-full">
-                  <summary className="cursor-pointer text-[10.5px] font-sans font-normal text-ink-3">
-                    args
-                  </summary>
-                  <pre className="mt-1 w-full max-w-[480px] overflow-x-auto whitespace-pre-wrap rounded-[var(--radius-control)] bg-inset px-2 py-1 text-[11px] leading-[1.4] text-ink-3">
-                    {argsJson}
-                  </pre>
-                </details>
+                <ToolDetail label="args">
+                  <pre className="whitespace-pre-wrap">{argsJson}</pre>
+                </ToolDetail>
               ) : null}
               {resultLines.length > 0 ? (
-                <details className="w-full">
-                  <summary className="cursor-pointer text-[10.5px] font-sans font-normal text-ink-3">
-                    result
-                  </summary>
-                  <pre className="mt-1 w-full max-w-[480px] overflow-x-auto whitespace-pre-wrap rounded-[var(--radius-control)] bg-inset px-2 py-1 text-[11px] leading-[1.4] text-ink-3">
-                    {resultLines.join('\n')}
-                  </pre>
-                </details>
+                <ToolDetail label="result">
+                  <pre className="whitespace-pre-wrap">{resultLines.join('\n')}</pre>
+                </ToolDetail>
               ) : null}
             </span>,
           )

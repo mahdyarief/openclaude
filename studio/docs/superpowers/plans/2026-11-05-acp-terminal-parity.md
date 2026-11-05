@@ -1,7 +1,7 @@
 # ACP ↔ Terminal 1:1 Parity — Milestone & Progress Check
 
 **Date:** 2026-11-05
-**Status:** Baseline + keputusan arah D1–D4 + kontrak arsitektur §5 tercatat; **M0 & M1 selesai & terverifikasi 2026-11-05**; M2–M6 belum dimulai
+**Status:** Baseline + keputusan arah D1–D4 + kontrak arsitektur §5 tercatat; **M0, M1 & M2 selesai & terverifikasi 2026-11-05**; M3–M6 belum dimulai
 **Scope:** `src/entrypoints/acp.ts`, `studio/packages/acp`, `studio/packages/ui`, `studio/apps/web`, `scripts/build.ts`
 **Baseline:** commit `dc6f47d2` (pushed `29fa9a76..dc6f47d2`), root `bun run build` exit 0
 **Acuan protokol:** `@agentclientprotocol/sdk@2.2.0` (schema ACP v1)
@@ -68,7 +68,7 @@ bukan *semua binary fitur CLI*. Fitur berbasis modul native / infrastruktur Anth
       (`src/utils/statusLineSnapshot.ts`) + ~50 setting lewat `openclaude/config`
       (`src/utils/studioConfigSurface.ts`)
 
-### Sudah selesai & terverifikasi (M0–M1, 2026-11-05)
+### Sudah selesai & terverifikasi (M0–M2, 2026-11-05)
 
 - [x] M0 — Fondasi arsitektur: dispatch table, emit bertipe, satu klien (§5).
       Snapshot before/after identik: 4 pass / 16 `expect()` untuk `git HEAD:acp.ts` (direktori
@@ -76,10 +76,14 @@ bukan *semua binary fitur CLI*. Fitur berbasis modul native / infrastruktur Anth
 - [x] M1 — Pancarkan `session/update` yang sudah didukung klien. 11 kind baru dipancarkan
       server, diterima store klien, dan diuji (root 16 pass / 49 `expect()`, studio 181 pass).
       Detail bukti di checklist M1.
+- [x] M2 — Fidelitas `ToolCall` + diff view. Server memetakan `kind`/`locations`/`content`
+      (`diff` + `terminal`), reducer klien mengawetkan blok struktural saat result teks datang,
+      chip `MessageBubble` merender diff via primitive shadcn `collapsible`. Terverifikasi:
+      root `acp.test.ts` 19 pass / 57 `expect()`, studio `vitest run` 27 file / 188 test,
+      `pnpm -r typecheck` & `pnpm -r build` hijau. Detail bukti di checklist M2.
 
 ### Belum dimulai (seluruh milestone di bawah)
 
-- [ ] M2 — Fidelitas `ToolCall` + diff view (Phase 3 design spec)
 - [ ] M3 — Permission berstruktur
 - [ ] M4 — Paritas slash command `local-jsx`
 - [ ] M5 — Siklus sesi, filesystem, terminal, MCP, lampiran
@@ -190,23 +194,42 @@ src/entrypoints/acp.test.ts` **16 pass / 0 fail / 49 `expect()`**; root `tsc --n
 root `bun run build` **exit 0**; root `bun run check` **exit 0**; studio `pnpm exec vitest run`
 **181 pass / 26 file**; `pnpm -r typecheck` **exit 0**; `pnpm -r build` **exit 0**.
 
-### M2 — Fidelitas `ToolCall` + diff view (Phase 3)
+### M2 — Fidelitas `ToolCall` + diff view (Phase 3) ✅ 2026-11-05
 
 **Tujuan:** akar keterbatasan chip `MessageBubble` yang baru kita perbaiki.
 
-- [ ] `toolUpdates()` (`acp.ts:151–183`) kirim `kind` nyata: `read|edit|delete|move|search|
-      execute|think|fetch|switch_mode|other` (saat ini hardcoded `'other'` di `:164`)
-- [ ] Sertakan `locations` (`ToolCallLocation`) untuk edit/read
-- [ ] Sertakan `content` bertipe `diff` (`{path, oldText, newText}`) untuk FileEdit/Write/
-      NotebookEdit/SedEdit, dan `terminal` (`{terminalId}`) untuk Bash/PowerShell
-- [ ] Renderer diff di `studio/packages/ui` (bukan `<details>/<summary>` hand-rolled; pakai
-      primitive shadcn `collapsible` per `studio/AGENTS.md`)
-- [ ] Rapikan chip `MessageBubble`: ganti `<details>/<summary>` dan `max-w-[480px]` literal
-      agar patuh `studio/AGENTS.md`
-- [ ] Test: mapping `tool_call_update` → state, snapshot diff render
+- [x] `toolUpdates()` (`acp.ts`) kirim `kind` nyata: `read|edit|delete|move|search|
+      execute|think|fetch|switch_mode|other` lewat `toolKindFor()`; path permission juga
+      memakainya, sehingga tidak ada lagi hardcoded `'other'`
+- [x] Sertakan `locations` (`ToolCallLocation`) untuk edit/read lewat `toolPresentationFor()`
+- [x] Sertakan `content` bertipe `diff` (`{path, oldText, newText}`) untuk Edit/Write/
+      NotebookEdit/SedEdit (`_simulatedSedEdit`), dan `terminal` (`{terminalId}`) untuk
+      Bash/PowerShell
+- [x] Renderer diff di `studio/packages/ui` memakai primitive shadcn `collapsible`
+      (`ToolDetail` + `DiffLines`), bukan `<details>/<summary>` hand-rolled
+- [x] Rapikan chip `MessageBubble`: `<details>/<summary>` dan `max-w-[480px]` literal hilang,
+      `style={{animation}}` diganti `animate-fade-up` / `.stream-caret` dari `@theme`
+- [x] Test: mapping `tool_call` → state + pengawetan blok struktural di `updates.test.ts`
+      (3 test baru), snapshot diff render di `MessageBubble.test.tsx` (4 test)
+
+**Catatan desain:** `ToolCallUpdate.content` bersifat *replace*, bukan merge. Server tetap
+mapper stateless (§5) yang memancarkan blok `diff`/`terminal` saat `tool_call` dibuka;
+`mergeToolCall` di klien mengawetkan blok struktural itu saat result teks tiba. Update yang
+sudah membawa blok struktural diperlakukan sebagai replace penuh (tanpa duplikasi).
+
+**Bukti verifikasi 2026-11-05:** `bun test src/entrypoints/acp.test.ts` → 19 pass / 57
+`expect()`; `corepack pnpm exec vitest run` → 27 file / 188 test; `pnpm -r typecheck` →
+4 package hijau; `pnpm -r build` → hijau; root `bun run typecheck` & `bun run build` →
+hijau (SDK 62 export sinkron, tanpa React/Ink leakage). `bun run check` masih gagal pada
+`test:full` (`QueryEngine.autoCompactCooldown.test.ts`: `formatDescriptionWithSource` tidak
+terbaca; `reactJsxDevRuntimeProductionShim.test.ts`). Kegagalan ini **pre-existing**:
+ter reproduksi identik di worktree bersih `HEAD f70ae71a` (base sebelum M2) dengan
+`node_modules` yang sama, dan tidak ada file terkait yang disentuh M2.
 
 **Selesai jika:** satu edit file menampilkan diff before/after di Studio, bukan cuma JSON
-`rawInput`/`rawOutput`.
+`rawInput`/`rawOutput`. ✅ Terpenuhi: `DiffLines` merender baris `- old`/`+ new` dengan
+token `bg-red-tint text-red` / `bg-green-tint text-green` di dalam `collapsible` yang
+terbuka secara default.
 
 ### M3 — Permission berstruktur
 

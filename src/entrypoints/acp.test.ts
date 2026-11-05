@@ -140,6 +140,81 @@ describe('acp tool updates', () => {
       },
     ])
   })
+
+  it('maps tool names to ACP kinds', () => {
+    const opened = toolUpdates({
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'tool_use', id: 'a', name: 'Read', input: { file_path: '/x' } },
+          { type: 'tool_use', id: 'b', name: 'Edit', input: { file_path: '/x' } },
+          { type: 'tool_use', id: 'c', name: 'Bash', input: { command: 'ls' } },
+          { type: 'tool_use', id: 'd', name: 'Grep', input: { pattern: 'z' } },
+          { type: 'tool_use', id: 'e', name: 'WebFetch', input: { url: 'u' } },
+          { type: 'tool_use', id: 'f', name: 'ExitPlanMode', input: {} },
+          { type: 'tool_use', id: 'g', name: 'SomethingElse', input: {} },
+        ],
+      },
+    } as never)
+    expect(opened.map(u => ('kind' in u ? u.kind : undefined))).toEqual([
+      'read', 'edit', 'execute', 'search', 'fetch', 'switch_mode', 'other',
+    ])
+  })
+
+  it('emits diff + locations for edit tools and a terminal block for shell tools', () => {
+    const opened = toolUpdates({
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'tool_use', id: 'e1', name: 'Edit', input: { file_path: '/a.ts', old_string: 'old', new_string: 'new' } },
+          { type: 'tool_use', id: 'w1', name: 'Write', input: { file_path: '/b.ts', content: 'body' } },
+          { type: 'tool_use', id: 'n1', name: 'NotebookEdit', input: { notebook_path: '/n.ipynb', new_source: '1+1' } },
+          { type: 'tool_use', id: 's1', name: 'Bash', input: { command: 'sed -i s/a/b/ /c.txt', _simulatedSedEdit: { filePath: '/c.txt', newContent: 'b' } } },
+        ],
+      },
+    } as never)
+    expect(opened[0]).toMatchObject({
+      kind: 'edit',
+      locations: [{ path: '/a.ts' }],
+      content: [{ type: 'diff', path: '/a.ts', oldText: 'old', newText: 'new' }],
+    })
+    expect(opened[1]).toMatchObject({
+      kind: 'edit',
+      locations: [{ path: '/b.ts' }],
+      content: [{ type: 'diff', path: '/b.ts', oldText: null, newText: 'body' }],
+    })
+    expect(opened[2]).toMatchObject({
+      kind: 'edit',
+      locations: [{ path: '/n.ipynb' }],
+      content: [{ type: 'diff', path: '/n.ipynb', oldText: null, newText: '1+1' }],
+    })
+    expect(opened[3]).toMatchObject({
+      kind: 'execute',
+      locations: [{ path: '/c.txt' }],
+      content: [
+        { type: 'diff', path: '/c.txt', oldText: null, newText: 'b' },
+        { type: 'terminal', terminalId: 's1' },
+      ],
+    })
+  })
+
+  it('gives Read a location and shell tools a terminal block without a diff', () => {
+    const opened = toolUpdates({
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'tool_use', id: 'r1', name: 'Read', input: { file_path: '/a.ts' } },
+          { type: 'tool_use', id: 'b1', name: 'Bash', input: { command: 'ls' } },
+        ],
+      },
+    } as never)
+    expect(opened[0]).toMatchObject({ kind: 'read', locations: [{ path: '/a.ts' }] })
+    expect(opened[0]!.content).toBeUndefined()
+    expect(opened[1]).toMatchObject({
+      kind: 'execute',
+      content: [{ type: 'terminal', terminalId: 'b1' }],
+    })
+  })
 })
 
 type Rpc = Record<string, unknown> & { id?: number; method?: string }

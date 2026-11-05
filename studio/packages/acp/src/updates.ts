@@ -2,6 +2,7 @@ import type {
   SessionNotification,
   SessionUpdate,
   ToolCall,
+  ToolCallContent,
   ToolCallUpdate,
 } from '@agentclientprotocol/sdk'
 import type {
@@ -81,6 +82,25 @@ function appendChunk(
   return next
 }
 
+function isStructuralContent(block: ToolCallContent): boolean {
+  return block.type === 'diff' || block.type === 'terminal'
+}
+
+// `ToolCallUpdate.content` replaces the whole collection, but structural blocks
+// (diff/terminal) describe the call itself and are only sent on `tool_call`.
+// Keep them when the result arrives as plain text so the UI can still render
+// the diff. An update that already carries structural blocks is a full replace,
+// so don't duplicate the preserved ones in that case.
+function mergeContent(
+  existing: ToolCall['content'],
+  incoming: ToolCallContent[],
+): ToolCallContent[] {
+  const preserved = incoming.some(isStructuralContent)
+    ? []
+    : (existing ?? []).filter(isStructuralContent)
+  return [...preserved, ...incoming]
+}
+
 // In ToolCallUpdate an omitted or null field means "leave unchanged", so a plain
 // spread would clobber the existing value with null. Apply only the fields the
 // update actually carries.
@@ -92,7 +112,7 @@ function mergeToolCall(existing: ToolCall | undefined, update: ToolCallUpdate): 
     ...(update.name != null ? { name: update.name } : {}),
     ...(update.kind != null ? { kind: update.kind } : {}),
     ...(update.status != null ? { status: update.status } : {}),
-    ...(update.content != null ? { content: update.content } : {}),
+    ...(update.content != null ? { content: mergeContent(base.content, update.content) } : {}),
     ...(update.locations != null ? { locations: update.locations } : {}),
     ...(update.rawInput !== undefined ? { rawInput: update.rawInput } : {}),
     ...(update.rawOutput !== undefined ? { rawOutput: update.rawOutput } : {}),
