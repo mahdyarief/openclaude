@@ -56,7 +56,7 @@ describe('collectAnswers', () => {
     expect(
       collectAnswers(questions, {
         'Which model should OpenClaude use?': ['Claude Code 4'],
-      }),
+      }, {}),
     ).toEqual({ 'Which model should OpenClaude use?': 'Claude Code 4' })
   })
 
@@ -64,13 +64,13 @@ describe('collectAnswers', () => {
     expect(
       collectAnswers(questions, {
         'Which features do you want to enable?': ['Plan mode', 'Auto-save'],
-      }),
+      }, {}),
     ).toEqual({
       'Which features do you want to enable?': 'Plan mode, Auto-save',
     })
   })
 
   test('omits unanswered questions', () => {
-    expect(collectAnswers(questions, {})).toEqual({})
+    expect(collectAnswers(questions, {}, {})).toEqual({})
   })
 })

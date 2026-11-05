@@ -4,6 +4,7 @@ import ThinkingState from '../beautifui/ThinkingState.js'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { cn } from '../lib/cn.js'
+import { Badge } from '../shadcn/badge.js'
 import { CommandChip, isCommandText, parseCommandInvocation } from './CommandChip.js'
 
 export type MessageBubbleProps = {
@@ -133,17 +134,58 @@ export function MessageBubble({
             return
           }
 
-          const title = (part.toolCallId && toolCalls[part.toolCallId]?.title) ?? part.toolCallId
+          const tc = part.toolCallId ? toolCalls[part.toolCallId] : undefined
+          const title = tc?.title ?? part.toolCallId
+          const status = tc?.status ?? (part.toolCallId ? 'pending' : undefined)
+          const argsJson =
+            tc?.rawInput && Object.keys(tc.rawInput as object).length > 0
+              ? JSON.stringify(tc.rawInput, null, 2)
+              : null
+          const resultLines =
+            tc?.content
+              ?.map((c) => {
+                if (c.type !== 'content' || !c.content || c.content.type !== 'text') return null
+                return c.content.text as string
+              })
+              .filter((v): v is string => !!v) ?? []
+
           chipRun.push(
             <span
               key={index}
               className={cn(
-                'inline-flex w-fit max-w-full items-center gap-1.5 rounded-[var(--radius-chip)]',
+                'inline-flex w-fit max-w-full flex-col gap-1.5 items-start rounded-[var(--radius-chip)]',
                 'bg-field px-2 py-1 font-mono text-[11.5px] text-ink-2',
               )}
             >
-              <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-orange" />
-              <span className="truncate">{title}</span>
+              <span className="inline-flex items-center gap-1.5">
+                <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-orange" />
+                <span className="truncate">{title}</span>
+                {status ? (
+                  <Badge variant={status === 'failed' ? 'danger' : status === 'completed' ? 'success' : status === 'in_progress' ? 'warning' : 'default'}>
+                    {status.replace('_', ' ')}
+                  </Badge>
+                ) : null}
+              </span>
+              {argsJson ? (
+                <details className="w-full">
+                  <summary className="cursor-pointer text-[10.5px] font-sans font-normal text-ink-3">
+                    args
+                  </summary>
+                  <pre className="mt-1 w-full max-w-[480px] overflow-x-auto whitespace-pre-wrap rounded-[var(--radius-control)] bg-inset px-2 py-1 text-[11px] leading-[1.4] text-ink-3">
+                    {argsJson}
+                  </pre>
+                </details>
+              ) : null}
+              {resultLines.length > 0 ? (
+                <details className="w-full">
+                  <summary className="cursor-pointer text-[10.5px] font-sans font-normal text-ink-3">
+                    result
+                  </summary>
+                  <pre className="mt-1 w-full max-w-[480px] overflow-x-auto whitespace-pre-wrap rounded-[var(--radius-control)] bg-inset px-2 py-1 text-[11px] leading-[1.4] text-ink-3">
+                    {resultLines.join('\n')}
+                  </pre>
+                </details>
+              ) : null}
             </span>,
           )
         })

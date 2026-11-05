@@ -4,6 +4,9 @@ import { Button } from "./Button.js";
 import { ChoiceRow } from "./ChoiceRow.js";
 import { cn } from "../lib/cn.js";
 
+/** Synthetic option value meaning the user typed a free-text answer. */
+const OTHER_OPTION = "__other__";
+
 /**
  * Renders a set of interactive questions the agent asked the user (via the
  * `AskUserQuestion` tool) as a step-by-step approval flow. Each question is a
@@ -12,7 +15,8 @@ import { cn } from "../lib/cn.js";
  *
  * Answers are keyed by question text, matching the `AskUserQuestion` input
  * contract. Multi-select answers are joined with `", "` exactly like the
- * terminal UI does.
+ * terminal UI does. Each question may also carry a free-text "Other" answer
+ * when the user types something that isn't one of the listed options.
  */
 export type QuestionPanelProps = {
   questions: AgentQuestion[];
@@ -28,6 +32,8 @@ export type QuestionPanelProps = {
     next?: string;
     /** label for the submit button */
     submit?: string;
+    /** placeholder shown inside the free-text input */
+    customPlaceholder?: string;
   };
   className?: string;
 };
@@ -35,16 +41,27 @@ export type QuestionPanelProps = {
 /**
  * Flattens the per-question selections into the `AskUserQuestion` answer
  * contract: keyed by question text, multi-select joined with `", "` (the same
- * separator the terminal UI uses). Unanswered questions are omitted.
+ * separator the terminal UI uses). Unanswered questions are omitted. A typed
+ * "Other" answer is appended when present.
  */
 export function collectAnswers(
   questions: AgentQuestion[],
   selections: Record<string, string[]>,
+  customValues: Record<string, string>,
 ): Record<string, string> {
   const collected: Record<string, string> = {};
   for (const question of questions) {
     const picked = selections[question.question] ?? [];
-    if (picked.length > 0) collected[question.question] = picked.join(", ");
+    if (picked.length > 0) {
+      const others = picked.filter(label => label === OTHER_OPTION);
+      const real = picked.filter(label => label !== OTHER_OPTION);
+      const parts = [...real];
+      if (others.length > 0) {
+        const custom = customValues[question.question]?.trim();
+        if (custom) parts.push(custom);
+      }
+      collected[question.question] = parts.join(", ");
+    }
   }
   return collected;
 }
@@ -59,12 +76,18 @@ export function QuestionPanel({
   const [step, setStep] = useState(0);
   // Selected labels per question text. Multi-select questions keep an array.
   const [selections, setSelections] = useState<Record<string, string[]>>({});
+  // Free-text "Other" value per question text.
+  const [customValues, setCustomValues] = useState<Record<string, string>>({});
 
   const question = questions[step];
   const total = questions.length;
   const last = step === total - 1;
   const selected = question ? (selections[question.question] ?? []) : [];
-  const hasAnswer = selected.length > 0;
+  const hasOther = selected.includes(OTHER_OPTION);
+  const custom = question ? (customValues[question.question] ?? "") : "";
+  const hasAnswer =
+    selected.filter(label => label !== OTHER_OPTION).length > 0 ||
+    (hasOther && custom.trim().length > 0);
 
   const toggle = (label: string) => {
     if (!question) return;
@@ -79,13 +102,21 @@ export function QuestionPanel({
           : [...current, label],
       };
     });
+    setCustomValues(prev => ({ ...prev, [question.question]: custom }));
     // Single-select questions advance automatically; multi-select needs an
-    // explicit "Next" because more options can still be added.
-    if (!question.multiSelect && !last) setStep(next => next + 1);
+    // explicit "Next" because more options can still be added. When "Other" is
+    // chosen we wait for the user to type before advancing.
+    if (!question.multiSelect && !last && label !== OTHER_OPTION)
+      setStep(next => next + 1);
+  };
+
+  const setCustomValue = (value: string) => {
+    if (!question) return;
+    setCustomValues(prev => ({ ...prev, [question.question]: value }));
   };
 
   const submit = () => {
-    onSubmit(collectAnswers(questions, selections));
+    onSubmit(collectAnswers(questions, selections, customValues));
   };
 
   return (
@@ -123,14 +154,36 @@ export function QuestionPanel({
             <p className="text-[11.5px] text-ink-3">Select all that apply.</p>
           ) : null}
           <ChoiceRow
-            value={selected[0] ?? ""}
-            options={question.options.map(option => ({
-              value: option.label,
-              label: option.label,
-              ...(selected.includes(option.label) ? { hint: "Selected" } : {}),
-            }))}
+            value={selected.filter(label => label !== OTHER_OPTION)}
+            options={[
+              ...question.options.map(option => ({
+                value: option.label,
+                label: option.label,
+                ...(selected.includes(option.label) ? { hint: "Selected" } : {}),
+              })),
+              {
+                value: OTHER_OPTION,
+                label: labels?.customPlaceholder ?? "Other",
+                ...(hasOther ? { hint: "Selected" } : {}),
+              },
+            ]}
             onSelect={toggle}
           />
+          {hasOther ? (
+            <div className="flex flex-col gap-1">
+              <input
+                type="text"
+                value={custom}
+                onChange={event => setCustomValue(event.target.value)}
+                placeholder={labels?.customPlaceholder ?? "Type your answer…"}
+                className="w-full rounded-[var(--radius-control)] border border-line bg-inset px-2 py-1 text-[11.5px] text-ink focus:border-accent focus:outline-none"
+                autoFocus
+              />
+              <p className="text-[10.5px] text-ink-3">
+                Or pick one of the options above instead.
+              </p>
+            </div>
+          ) : null}
         </div>
       ) : null}
 

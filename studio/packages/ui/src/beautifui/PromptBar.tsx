@@ -271,7 +271,7 @@ export default function PromptBar({
           aria-label="Chat prompt"
           disabled={disabled}
           rows={1}
-          className="max-h-[132px] min-h-[1.4em] resize-none overflow-y-auto bg-transparent text-[13px] leading-[1.4] text-ink outline-none placeholder:text-ink-3 disabled:opacity-60"
+          className="max-h-[132px] min-h-[1.4em] resize-none bg-transparent text-[13px] leading-[1.4] text-ink outline-none placeholder:text-ink-3 disabled:opacity-60"
         />
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-1.5">

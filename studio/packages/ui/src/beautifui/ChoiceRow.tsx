@@ -20,13 +20,14 @@ export function ChoiceRow({
   options,
   onSelect,
 }: {
-  value: string;
+  value: string | string[];
   options: ChoiceOption[];
   onSelect: (value: string) => void;
 }) {
+  const values = Array.isArray(value) ? value : [value];
   const activeIndex = Math.max(
     0,
-    options.findIndex(option => option.value === value),
+    options.findIndex(option => values.includes(option.value)),
   );
   const [focused, setFocused] = useState(activeIndex);
   const rowRefs = useRef<(HTMLButtonElement | null)[]>([]);
@@ -63,7 +64,7 @@ export function ChoiceRow({
   return (
     <div className="flex flex-col gap-1.5">
       {options.map((option, index) => {
-        const active = option.value === value;
+        const active = values.includes(option.value);
         const isFocused = index === focused;
         return (
           <button
