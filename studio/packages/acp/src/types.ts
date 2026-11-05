@@ -1,4 +1,5 @@
 import type {
+  CompactionStatus,
   ContentBlock,
   Plan,
   SessionConfigOption,
@@ -56,6 +57,13 @@ export type AvailableCommand = {
   argumentHint?: string
 }
 
+export type Compaction = {
+  compactionId: string
+  status: CompactionStatus
+  summary: ContentBlock[]
+  error: string | null
+}
+
 export type SessionState = {
   sessionId: string
   cwd: string
@@ -65,6 +73,7 @@ export type SessionState = {
   plan: Plan | null
   usage: UsageUpdate | null
   modes: SessionModeState | null
+  compactions: Record<string, Compaction>
   configOptions: Array<SessionConfigOption>
   /** slash commands the agent supports, for the composer's `/` menu */
   commands: AvailableCommand[]

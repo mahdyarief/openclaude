@@ -91,6 +91,149 @@ type JsonRpcResponse = {
 
 type AcpWriter = (message: JsonRpcResponse | { jsonrpc: '2.0'; method: string; params: unknown }) => void
 
+type AcpToolKind =
+  | 'read'
+  | 'write'
+  | 'edit'
+  | 'delete'
+  | 'move'
+  | 'search'
+  | 'execute'
+  | 'think'
+  | 'fetch'
+  | 'switch_mode'
+  | 'other'
+
+type AcpToolCallUpdate = {
+  sessionUpdate: 'tool_call'
+  toolCallId: string
+  title: string
+  kind: AcpToolKind
+  status: 'in_progress'
+  rawInput: Record<string, unknown>
+}
+
+type AcpToolCallResultUpdate = {
+  sessionUpdate: 'tool_call_update'
+  toolCallId: string
+  status: 'completed' | 'failed'
+  content?: Array<{ type: 'content'; content: { type: 'text'; text: string } }>
+  rawOutput: unknown
+}
+
+type AcpToolUpdate = AcpToolCallUpdate | AcpToolCallResultUpdate
+
+type AcpAgentMessageChunk = {
+  sessionUpdate: 'agent_message_chunk'
+  content: { type: 'text'; text: string }
+}
+
+type AcpAvailableCommand = {
+  name: string
+  description: string
+  _meta: { type: string; argumentHint?: string }
+}
+
+type AcpAvailableCommandsUpdate = {
+  sessionUpdate: 'available_commands_update'
+  availableCommands: AcpAvailableCommand[]
+}
+
+type AcpTextContent = { type: 'text'; text: string }
+
+type AcpUserMessageChunk = {
+  sessionUpdate: 'user_message_chunk'
+  content: AcpTextContent
+}
+
+type AcpAgentThoughtChunk = {
+  sessionUpdate: 'agent_thought_chunk'
+  content: AcpTextContent
+}
+
+type AcpPlanUpdate = {
+  sessionUpdate: 'plan'
+  entries: Array<{
+    content: string
+    priority: 'high' | 'medium' | 'low'
+    status: 'pending' | 'in_progress' | 'completed'
+  }>
+}
+
+type AcpUsageUpdate = {
+  sessionUpdate: 'usage_update'
+  used: number
+  size: number
+  cost?: { amount: number; currency: string } | null
+}
+
+type AcpCurrentModeUpdate = {
+  sessionUpdate: 'current_mode_update'
+  currentModeId: string
+}
+
+type AcpConfigOptionUpdate = {
+  sessionUpdate: 'config_option_update'
+  configOptions: Array<
+    | {
+        id: string
+        name: string
+        type: 'select'
+        currentValue: string
+        options: Array<{ value: string; name: string }>
+      }
+    | { id: string; name: string; type: 'boolean'; currentValue: boolean }
+  >
+}
+
+type AcpSessionInfoUpdate = {
+  sessionUpdate: 'session_info_update'
+  title?: string | null
+  updatedAt?: string | null
+}
+
+type AcpNotice = {
+  sessionUpdate: 'notice'
+  severity: 'info' | 'warning' | 'error'
+  title: string
+  description?: string | null
+}
+
+type AcpCompactionUpdate = {
+  sessionUpdate: 'compaction_update'
+  compactionId: string
+  status: 'in_progress' | 'completed' | 'failed' | 'cancelled'
+  summary?: AcpTextContent[] | null
+  error?: string | null
+}
+
+type AcpCompactionSummaryChunk = {
+  sessionUpdate: 'compaction_summary_chunk'
+  compactionId: string
+  content: AcpTextContent
+}
+
+/**
+ * The ACP SDK is only installed in the `studio` workspace, not in the root
+ * CLI bundle, so the server keeps its own strict union of the updates it emits.
+ * Adding a new kind here (and only here) is what forces M1/M2 mappers to be
+ * handled at compile time instead of silently passing a `Record<string, unknown>`.
+ */
+export type AcpSessionUpdate =
+  | AcpToolUpdate
+  | AcpAgentMessageChunk
+  | AcpAvailableCommandsUpdate
+  | AcpUserMessageChunk
+  | AcpAgentThoughtChunk
+  | AcpPlanUpdate
+  | AcpUsageUpdate
+  | AcpCurrentModeUpdate
+  | AcpConfigOptionUpdate
+  | AcpSessionInfoUpdate
+  | AcpNotice
+  | AcpCompactionUpdate
+  | AcpCompactionSummaryChunk
+
 type SessionState = {
   cwd: string
   session: SDKSession
@@ -135,6 +278,203 @@ function textFromMessage(message: SDKMessage): string | null {
   return null
 }
 
+/** Text from a real user turn, excluding tool results and compaction summaries. */
+export function userTextFromMessage(message: SDKMessage): string | null {
+  if (message.type !== 'user') return null
+  const record = message as unknown as Record<string, unknown>
+  if (record.isReplay === true || record.isSynthetic === true) return null
+  const inner = message.message as Record<string, unknown>
+  if (inner.isCompactSummary === true || inner.isVisibleInTranscriptOnly === true) return null
+  if (record.tool_use_result !== undefined) return null
+  return textBlocks(message.message.content)
+}
+
+/** Thinking text, mirroring `textFromMessage` but for thought blocks/deltas. */
+export function thinkingFromMessage(message: SDKMessage): string | null {
+  if (message.type === 'assistant') {
+    const content = message.message.content
+    if (!Array.isArray(content)) return null
+    return (
+      content
+        .filter(isRecord)
+        .filter(block => block.type === 'thinking' && typeof block.thinking === 'string')
+        .map(block => block.thinking as string)
+        .join('') || null
+    )
+  }
+
+  if (message.type === 'stream_event' && isRecord(message.event)) {
+    const delta = message.event.delta
+    if (isRecord(delta) && delta.type === 'thinking_delta' && typeof delta.thinking === 'string') {
+      return delta.thinking
+    }
+  }
+
+  return null
+}
+
+/** The generated compaction summary, when the runtime forwards it as a user message. */
+export function compactSummaryFromMessage(message: SDKMessage): string | null {
+  if (message.type !== 'user') return null
+  const record = message as unknown as Record<string, unknown>
+  if (record.isReplay === true) return null
+  const inner = message.message as Record<string, unknown>
+  if (inner.isCompactSummary !== true && inner.isVisibleInTranscriptOnly !== true) return null
+  return textBlocks(message.message.content)
+}
+
+function textBlocks(content: unknown): string | null {
+  if (typeof content === 'string') return content || null
+  if (!Array.isArray(content)) return null
+  return (
+    content
+      .filter(isRecord)
+      .filter(block => block.type === 'text' && typeof block.text === 'string')
+      .map(block => block.text as string)
+      .join('') || null
+  )
+}
+
+function compactionIdFor(sessionId: string): string {
+  return `${sessionId}:compaction`
+}
+
+/** Map the lifecycle events the SDK emits around a context compaction. */
+export function compactionUpdates(
+  message: SDKMessage,
+  sessionId: string,
+): AcpCompactionUpdate[] {
+  if (message.type !== 'system') return []
+  const record = message as unknown as Record<string, unknown>
+  if (record.subtype === 'status' && record.status === 'compacting') {
+    return [
+      {
+        sessionUpdate: 'compaction_update',
+        compactionId: compactionIdFor(sessionId),
+        status: 'in_progress',
+      },
+    ]
+  }
+  if (record.subtype === 'compact_boundary') {
+    return [
+      {
+        sessionUpdate: 'compaction_update',
+        compactionId: compactionIdFor(sessionId),
+        status: 'completed',
+      },
+    ]
+  }
+  return []
+}
+
+/** Surface retry/error stream events as ACP notices. */
+export function noticeFromMessage(message: SDKMessage): AcpNotice | null {
+  const record = message as unknown as Record<string, unknown>
+  if (message.type === 'system' && record.subtype === 'api_retry') {
+    const attempt = typeof record.attempt === 'number' ? record.attempt : 0
+    const maxRetries = typeof record.max_retries === 'number' ? record.max_retries : 0
+    return {
+      sessionUpdate: 'notice',
+      severity: 'warning',
+      title: `API retry ${attempt}/${maxRetries}`,
+      description: typeof record.error === 'string' ? record.error : null,
+    }
+  }
+  if (message.type === 'result' && record.subtype === 'error') {
+    const errors = Array.isArray(record.errors)
+      ? record.errors.filter((entry): entry is string => typeof entry === 'string')
+      : []
+    return {
+      sessionUpdate: 'notice',
+      severity: 'error',
+      title: 'Turn failed',
+      description: errors.join('; ') || null,
+    }
+  }
+  return null
+}
+
+type StatusAppState = Parameters<typeof buildStatusSnapshot>[0]
+type StatusSnapshotValue = Awaited<ReturnType<typeof buildStatusSnapshot>>
+
+/** Aggregate state derived from the same snapshot the statusline extension consumes. */
+export function statusUpdates(snapshot: StatusSnapshotValue): AcpSessionUpdate[] {
+  const updates: AcpSessionUpdate[] = []
+  if (snapshot.contextWindow) {
+    updates.push({
+      sessionUpdate: 'usage_update',
+      used: snapshot.contextWindow.tokens,
+      size: snapshot.contextWindow.size,
+      cost: { amount: snapshot.session.costUsd, currency: 'USD' },
+    })
+  }
+  updates.push({
+    sessionUpdate: 'session_info_update',
+    title: snapshot.session.name,
+    updatedAt: new Date().toISOString(),
+  })
+  updates.push({
+    sessionUpdate: 'current_mode_update',
+    currentModeId: snapshot.permissionMode,
+  })
+  return updates
+}
+
+/** Flatten the per-agent todo lists into one ACP plan. */
+export function planUpdate(appState: StatusAppState): AcpPlanUpdate | null {
+  const todosByAgent = appState.todos
+  if (!todosByAgent) return null
+  const entries: AcpPlanUpdate['entries'] = []
+  for (const todos of Object.values(todosByAgent)) {
+    if (!Array.isArray(todos)) continue
+    for (const todo of todos) {
+      if (!isRecord(todo) || typeof todo.content !== 'string') continue
+      const status = todo.status
+      entries.push({
+        content: todo.content,
+        priority: 'medium',
+        status: status === 'in_progress' || status === 'completed' ? status : 'pending',
+      })
+    }
+  }
+  return { sessionUpdate: 'plan', entries }
+}
+
+export function noticeUpdateFromAppState(appState: StatusAppState): AcpNotice | null {
+  const current = appState.notifications?.current
+  if (!current) return null
+  const record = current as unknown as Record<string, unknown>
+  if (typeof record.text !== 'string' || !record.text) return null
+  const priority = record.priority
+  return {
+    sessionUpdate: 'notice',
+    severity: priority === 'immediate' || priority === 'high' ? 'warning' : 'info',
+    title: record.text,
+    description: null,
+  }
+}
+
+export function configOptionsUpdate(): AcpConfigOptionUpdate {
+  const configOptions: AcpConfigOptionUpdate['configOptions'] = buildConfigSettings().map(
+    setting =>
+      setting.type === 'boolean'
+        ? {
+            id: setting.id,
+            name: setting.label,
+            type: 'boolean' as const,
+            currentValue: Boolean(setting.read()),
+          }
+        : {
+            id: setting.id,
+            name: setting.label,
+            type: 'select' as const,
+            currentValue: String(setting.read() ?? ''),
+            options: (setting.options ?? []).map(value => ({ value, name: value })),
+          },
+  )
+  return { sessionUpdate: 'config_option_update', configOptions }
+}
+
 function toolResultText(content: unknown): string {
   if (typeof content === 'string') return content
   if (!Array.isArray(content)) return ''
@@ -148,38 +488,42 @@ function toolResultText(content: unknown): string {
 // Every tool_use opens a tool_call and every tool_result closes it with a
 // tool_call_update. Without the closing update the client never learns a tool
 // finished and only sees its result after reloading history from disk.
-export function toolUpdates(message: SDKMessage): Array<Record<string, unknown>> {
+export function toolUpdates(message: SDKMessage): AcpToolUpdate[] {
   if (message.type !== 'assistant' && message.type !== 'user') return []
   const content = (message.message as { content?: unknown }).content
   if (!Array.isArray(content)) return []
 
   if (message.type === 'assistant') {
-    return content
-      .filter(isRecord)
-      .filter(block => block.type === 'tool_use' && typeof block.id === 'string')
-      .map(tool => ({
-        sessionUpdate: 'tool_call',
-        toolCallId: tool.id,
-        title: typeof tool.name === 'string' ? tool.name : 'OpenClaude tool',
-        kind: 'other',
-        status: 'in_progress',
-        rawInput: isRecord(tool.input) ? tool.input : {},
-      }))
+    return content.filter(isRecord).flatMap((tool): AcpToolCallUpdate[] => {
+      if (tool.type !== 'tool_use' || typeof tool.id !== 'string') return []
+      return [
+        {
+          sessionUpdate: 'tool_call',
+          toolCallId: tool.id,
+          title: typeof tool.name === 'string' ? tool.name : 'OpenClaude tool',
+          kind: 'other',
+          status: 'in_progress',
+          rawInput: isRecord(tool.input) ? tool.input : {},
+        },
+      ]
+    })
   }
 
-  return content
-    .filter(isRecord)
-    .filter(block => block.type === 'tool_result' && typeof block.tool_use_id === 'string')
-    .map(result => {
-      const text = toolResultText(result.content)
-      return {
+  return content.filter(isRecord).flatMap((result): AcpToolCallResultUpdate[] => {
+    if (result.type !== 'tool_result' || typeof result.tool_use_id !== 'string') return []
+    const text = toolResultText(result.content)
+    return [
+      {
         sessionUpdate: 'tool_call_update',
         toolCallId: result.tool_use_id,
         status: result.is_error === true ? 'failed' : 'completed',
-        ...(text ? { content: [{ type: 'content', content: { type: 'text', text } }] } : {}),
+        ...(text
+          ? { content: [{ type: 'content' as const, content: { type: 'text' as const, text } }] }
+          : {}),
         rawOutput: result.content ?? null,
-      }
-    })
+      },
+    ]
+  })
 }
 
 export function createAcpServer(
@@ -190,6 +534,8 @@ export function createAcpServer(
   const pendingRequests = new Map<JsonRpcId, (result: unknown) => void>()
   let nextRequestId = 1
   let initialized = false
+  let supportsCompaction = false
+  let supportsNotices = false
 
   const write: AcpWriter = message => {
     output.write(`${JSON.stringify(message)}\n`)
@@ -242,6 +588,20 @@ export function createAcpServer(
     write({ jsonrpc: '2.0', method, params })
   }
 
+  const emitUpdate = (sessionId: string, update: AcpSessionUpdate): void => {
+    // ACP requires compaction/notice updates only when the client advertised
+    // the matching session capability during initialize.
+    if (
+      (update.sessionUpdate === 'compaction_update' ||
+        update.sessionUpdate === 'compaction_summary_chunk') &&
+      !supportsCompaction
+    ) {
+      return
+    }
+    if (update.sessionUpdate === 'notice' && !supportsNotices) return
+    notify('session/update', { sessionId, update })
+  }
+
   /**
    * Tell the client which slash commands this session supports so a remote
    * composer can offer a `/` menu from the real registry instead of a
@@ -251,23 +611,21 @@ export function createAcpServer(
   const advertiseCommands = async (sessionId: string, cwd: string): Promise<void> => {
     try {
       const commands = await getCommands(cwd)
-      notify('session/update', {
-        sessionId,
-        update: {
-          sessionUpdate: 'available_commands_update',
-          availableCommands: commands.map(command => ({
-            name: command.name,
-            description: command.description,
-            // `local-jsx` commands render terminal UI and are no-ops over ACP.
-            // Expose the kind so a remote composer can render its own panel
-            // instead of sending a prompt that would produce no output.
-            _meta: {
-              type: command.type,
-              ...(command.argumentHint ? { argumentHint: command.argumentHint } : {}),
-            },
-          })),
-        },
-      })
+      const update: AcpAvailableCommandsUpdate = {
+        sessionUpdate: 'available_commands_update',
+        availableCommands: commands.map(command => ({
+          name: command.name,
+          description: command.description,
+          // `local-jsx` commands render terminal UI and are no-ops over ACP.
+          // Expose the kind so a remote composer can render its own panel
+          // instead of sending a prompt that would produce no output.
+          _meta: {
+            type: command.type,
+            ...(command.argumentHint ? { argumentHint: command.argumentHint } : {}),
+          },
+        })),
+      }
+      emitUpdate(sessionId, update)
     } catch {
       // Best-effort: the composer simply has no `/` menu this session.
     }
@@ -285,6 +643,7 @@ export function createAcpServer(
   const subscribeSessionStatus = (state: SessionState): void => {
     const sessionId = state.session.sessionId
     let timer: ReturnType<typeof setTimeout> | null = null
+    let previousNoticeKey: string | null = null
     const emit = (): void => {
       if (timer) {
         clearTimeout(timer)
@@ -293,11 +652,25 @@ export function createAcpServer(
       timer = setTimeout(() => {
         timer = null
         void (async () => {
+          const appState = state.session.getAppState()
+          // The state-derived kinds are independent of the async status
+          // snapshot, so emit them first. A single subscription per session
+          // keeps every kind behind the same 150ms debounce.
+          const plan = planUpdate(appState)
+          if (plan) emitUpdate(sessionId, plan)
+          const notice = noticeUpdateFromAppState(appState)
+          const noticeKey =
+            notice && isRecord(appState.notifications?.current)
+              ? String((appState.notifications?.current as Record<string, unknown>).key ?? notice.title)
+              : null
+          if (notice && noticeKey !== previousNoticeKey) {
+            previousNoticeKey = noticeKey
+            emitUpdate(sessionId, notice)
+          }
           try {
-            notify('openclaude/status_update', {
-              sessionId,
-              status: await buildStatusSnapshot(state.session.getAppState(), state.session.getMessages()),
-            })
+            const snapshot = await buildStatusSnapshot(appState, state.session.getMessages())
+            notify('openclaude/status_update', { sessionId, status: snapshot })
+            for (const update of statusUpdates(snapshot)) emitUpdate(sessionId, update)
           } catch {
             // Best-effort: a transient git failure must not tear down the
             // subscription; the client keeps its last known snapshot.
@@ -365,25 +738,16 @@ export function createAcpServer(
     })
   }
 
-  const handle = async (message: JsonRpcRequest): Promise<void> => {
-    if (message.id !== undefined && pendingRequests.has(message.id)) {
-      const resolve = pendingRequests.get(message.id)!
-      pendingRequests.delete(message.id)
-      // A JSON-RPC *response* (what the client sends when answering a
-      // permission request) carries its payload in `result`, not `params`.
-      // Fall back to `params` so a malformed response never crashes the loop.
-      resolve(message.result ?? message.params ?? {})
-      return
-    }
+  type AcpHandler = (message: JsonRpcRequest) => Promise<void> | void
 
-    // init() must run before session creation; it enables configs and must not
-    // run inside the SDK's AsyncLocalStorage context.
-    if (!initialized) {
-      await runOutsideSdkContext(init)
-      initialized = true
-    }
-
-    if (message.method === 'initialize') {
+  const handlers: Record<string, AcpHandler> = {
+    initialize(message) {
+      const capabilities = isRecord(message.params?.clientCapabilities)
+        ? message.params.clientCapabilities
+        : {}
+      const sessionCapabilities = isRecord(capabilities.session) ? capabilities.session : {}
+      supportsCompaction = isRecord(sessionCapabilities.compaction)
+      supportsNotices = isRecord(sessionCapabilities.notices)
       if (message.id === undefined) return
       respond(message.id, {
         protocolVersion: ACP_PROTOCOL_VERSION,
@@ -393,15 +757,9 @@ export function createAcpServer(
         },
         agentInfo: ACP_AGENT_INFO,
       })
-      return
-    }
+    },
 
-    if (!initialized) {
-      if (message.id !== undefined) fail(message.id, -32002, 'initialize must be called first')
-      return
-    }
-
-    if (message.method === 'session/new') {
+    'session/new': async message => {
       const cwd = typeof message.params?.cwd === 'string' ? message.params.cwd : process.cwd()
       const mode = resolveSessionPermissionMode(message.params)
       const mcpServers = await loadMcpServers()
@@ -424,11 +782,11 @@ export function createAcpServer(
       // Advertise after the response so the client has adopted the session
       // store by the time the command list lands.
       void advertiseCommands(session.sessionId, cwd)
+      emitUpdate(session.sessionId, configOptionsUpdate())
       subscribeSessionStatus(sessions.get(session.sessionId)!)
-      return
-    }
+    },
 
-    if (message.method === 'session/load') {
+    'session/load': async message => {
       const sessionId = typeof message.params?.sessionId === 'string' ? message.params.sessionId : ''
       const cwd = typeof message.params?.cwd === 'string' ? message.params.cwd : process.cwd()
       if (!sessionId) {
@@ -451,19 +809,18 @@ export function createAcpServer(
       sessions.set(sessionId, { cwd, session, active: null })
       if (message.id !== undefined) respond(message.id, { sessionId })
       void advertiseCommands(sessionId, cwd)
+      emitUpdate(sessionId, configOptionsUpdate())
       subscribeSessionStatus(sessions.get(sessionId)!)
-      return
-    }
+    },
 
-    if (message.method === 'session/cancel') {
+    'session/cancel'(message) {
       const sessionId = typeof message.params?.sessionId === 'string' ? message.params.sessionId : ''
       const state = sessions.get(sessionId)
       if (state) state.session.interrupt()
       if (message.id !== undefined) respond(message.id, {})
-      return
-    }
+    },
 
-    if (message.method === 'session/prompt') {
+    'session/prompt'(message) {
       const sessionId = typeof message.params?.sessionId === 'string' ? message.params.sessionId : ''
       const state = sessions.get(sessionId)
       if (!state) {
@@ -480,13 +837,41 @@ export function createAcpServer(
           for await (const sdkMessage of state.session.sendMessage(textFromPrompt(message.params ?? {}))) {
             const text = textFromMessage(sdkMessage)
             if (text) {
-              notify('session/update', {
-                sessionId,
-                update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } },
+              const update: AcpAgentMessageChunk = {
+                sessionUpdate: 'agent_message_chunk',
+                content: { type: 'text', text },
+              }
+              emitUpdate(sessionId, update)
+            }
+            const thought = thinkingFromMessage(sdkMessage)
+            if (thought) {
+              emitUpdate(sessionId, {
+                sessionUpdate: 'agent_thought_chunk',
+                content: { type: 'text', text: thought },
               })
             }
+            const userText = userTextFromMessage(sdkMessage)
+            if (userText) {
+              emitUpdate(sessionId, {
+                sessionUpdate: 'user_message_chunk',
+                content: { type: 'text', text: userText },
+              })
+            }
+            for (const update of compactionUpdates(sdkMessage, sessionId)) {
+              emitUpdate(sessionId, update)
+            }
+            const compactSummary = compactSummaryFromMessage(sdkMessage)
+            if (compactSummary) {
+              emitUpdate(sessionId, {
+                sessionUpdate: 'compaction_summary_chunk',
+                compactionId: compactionIdFor(sessionId),
+                content: { type: 'text', text: compactSummary },
+              })
+            }
+            const notice = noticeFromMessage(sdkMessage)
+            if (notice) emitUpdate(sessionId, notice)
             for (const update of toolUpdates(sdkMessage)) {
-              notify('session/update', { sessionId, update })
+              emitUpdate(sessionId, update)
             }
           }
           if (message.id !== undefined) respond(message.id, { stopReason: 'end_turn' })
@@ -498,10 +883,9 @@ export function createAcpServer(
           state.active = null
         }
       })()
-      return
-    }
+    },
 
-    if (message.method === 'openclaude/config') {
+    'openclaude/config': async message => {
       const params = isRecord(message.params) ? message.params : {}
       const mode = typeof params.mode === 'string' ? params.mode : 'get'
       if (mode === 'set') {
@@ -511,10 +895,9 @@ export function createAcpServer(
       }
       if (message.id === undefined) return
       respond(message.id, readConfigSnapshot())
-      return
-    }
+    },
 
-    if (message.method === 'openclaude/status') {
+    'openclaude/status': async message => {
       if (message.id === undefined) return
       const sessionId = typeof message.params?.sessionId === 'string' ? message.params.sessionId : ''
       const state = sessions.get(sessionId)
@@ -523,10 +906,38 @@ export function createAcpServer(
         return
       }
       respond(message.id, await buildStatusSnapshot(state.session.getAppState(), state.session.getMessages()))
+    },
+  }
+
+  const handle = async (message: JsonRpcRequest): Promise<void> => {
+    if (message.id !== undefined && pendingRequests.has(message.id)) {
+      const resolve = pendingRequests.get(message.id)!
+      pendingRequests.delete(message.id)
+      // A JSON-RPC *response* (what the client sends when answering a
+      // permission request) carries its payload in `result`, not `params`.
+      // Fall back to `params` so a malformed response never crashes the loop.
+      resolve(message.result ?? message.params ?? {})
       return
     }
 
-    if (message.id !== undefined) fail(message.id, -32601, `Method not found: ${message.method}`)
+    // init() must run before session creation; it enables configs and must not
+    // run inside the SDK's AsyncLocalStorage context.
+    if (!initialized) {
+      await runOutsideSdkContext(init)
+      initialized = true
+    }
+
+    // `constructor`/`toString` resolve through Object.prototype on a plain
+    // record, so a plain index lookup would invoke them as handlers.
+    const method = message.method
+    const handler = typeof method === 'string' && Object.hasOwn(handlers, method)
+      ? handlers[method]
+      : undefined
+    if (!handler) {
+      if (message.id !== undefined) fail(message.id, -32601, `Method not found: ${message.method}`)
+      return
+    }
+    await handler(message)
   }
 
   /**

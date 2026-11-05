@@ -6,6 +6,7 @@ import type {
 } from '@agentclientprotocol/sdk'
 import type {
   AvailableCommand,
+  Compaction,
   ConversationMessage,
   MessagePart,
   SessionState,
@@ -32,6 +33,7 @@ export function emptySession(sessionId: string, cwd: string): SessionState {
     plan: null,
     usage: null,
     modes: null,
+    compactions: {},
     configOptions: [],
     commands: [],
     permissionQueue: [],
@@ -67,15 +69,16 @@ function appendChunk(
     isTextual(part) &&
     previous.kind === part.kind
 
+  const parts = last.parts.slice()
   if (canMerge) {
-    const merged = { ...previous, text: previous.text + part.text } as TextPart
-    return [
-      ...messages.slice(0, -1),
-      { ...last, parts: [...last.parts.slice(0, -1), merged] },
-    ]
+    parts[parts.length - 1] = { ...previous, text: previous.text + part.text } as TextPart
+  } else {
+    parts.push(part)
   }
 
-  return [...messages.slice(0, -1), { ...last, parts: [...last.parts, part] }]
+  const next = messages.slice()
+  next[next.length - 1] = { ...last, parts }
+  return next
 }
 
 // In ToolCallUpdate an omitted or null field means "leave unchanged", so a plain
@@ -95,6 +98,13 @@ function mergeToolCall(existing: ToolCall | undefined, update: ToolCallUpdate): 
     ...(update.rawOutput !== undefined ? { rawOutput: update.rawOutput } : {}),
     ...(update._meta !== undefined ? { _meta: update._meta } : {}),
   }
+}
+
+// Compile-time exhaustiveness guard: a new SessionUpdate kind must be handled
+// above. It returns its argument instead of throwing so an update from a newer
+// agent still resolves to `state` below rather than crashing the reducer.
+function assertNever(value: never): never {
+  return value
 }
 
 function applyUpdate(state: SessionState, update: SessionUpdate): SessionState {
@@ -180,7 +190,61 @@ function applyUpdate(state: SessionState, update: SessionUpdate): SessionState {
         }),
       }
     case 'current_mode_update':
-      return state
+      return {
+        ...state,
+        modes: {
+          currentModeId: update.currentModeId,
+          availableModes: state.modes?.availableModes ?? [],
+        },
+      }
+    case 'compaction_update': {
+      const existing = state.compactions[update.compactionId]
+      const base: Compaction = existing ?? {
+        compactionId: update.compactionId,
+        status: update.status,
+        summary: [],
+        error: null,
+      }
+      // summary/error use patch semantics: omitted keeps, null clears.
+      const summary =
+        update.summary === undefined
+          ? base.summary
+          : update.summary === null
+            ? []
+            : update.summary
+      const error =
+        update.error === undefined
+          ? base.error
+          : update.error === null
+            ? null
+            : update.error
+      return {
+        ...state,
+        compactions: {
+          ...state.compactions,
+          [update.compactionId]: { ...base, status: update.status, summary, error },
+        },
+      }
+    }
+    case 'compaction_summary_chunk': {
+      const existing = state.compactions[update.compactionId]
+      const base: Compaction = existing ?? {
+        compactionId: update.compactionId,
+        status: 'in_progress',
+        summary: [],
+        error: null,
+      }
+      return {
+        ...state,
+        compactions: {
+          ...state.compactions,
+          [update.compactionId]: {
+            ...base,
+            summary: [...base.summary, update.content],
+          },
+        },
+      }
+    }
     case 'config_option_update':
       return { ...state, configOptions: update.configOptions }
     case 'session_info_update':
@@ -194,13 +258,9 @@ function applyUpdate(state: SessionState, update: SessionUpdate): SessionState {
           description: update.description ?? null,
         },
       }
-    case 'compaction_update':
-      return state
-    case 'compaction_summary_chunk':
-      return state
-    default:
-      return state
   }
+  assertNever(update)
+  return state
 }
 
 export function applySessionUpdate(

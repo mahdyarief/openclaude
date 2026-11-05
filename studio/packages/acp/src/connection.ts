@@ -12,6 +12,7 @@ import {
   type ContentBlock,
   type PromptResponse,
   type SendRequestOptions,
+  type ClientApp,
 } from '@agentclientprotocol/sdk'
 import { createWebSocketStream } from '@agentclientprotocol/sdk/experimental/ws-client'
 
@@ -199,12 +200,34 @@ type StatusUpdateParams = {
   status: AgentStatusSnapshot
 }
 
-export async function connectHandshake(
-  options: Pick<AgentConnectionOptions, 'url' | 'token' | 'onUpdate' | 'onPermission' | 'onStatus'>,
-): Promise<AgentHandshake> {
-  let statusCallback: ((snapshot: AgentStatusSnapshot) => void) | null = null
-  const stream = createWebSocketStream(bridgeSocketUrl(options.url, options.token))
-  const app = client({ name: 'openclaude-studio' })
+type HandlerOptions = Pick<
+  AgentConnectionOptions,
+  'onUpdate' | 'onPermission' | 'onStatus'
+>
+
+type ClientHandlers = {
+  /** Mutations to this callback are observed by the registered status handler. */
+  statusCallback: { current: ((snapshot: AgentStatusSnapshot) => void) | null }
+}
+
+/**
+ * The client-capabilities flag and the fs handlers live in one place so the
+ * agent can never be told "fs supported" when no handler is installed.
+ * Implementing an fs method in M5 means flipping its flag here.
+ */
+const FS_CAPABILITIES = { readTextFile: false, writeTextFile: false } as const
+
+// The notice/compaction handlers live in updates.ts rather than here, but the
+// capability must be advertised from the same handshake so the agent never
+// emits these kinds to a client that would drop them.
+const SESSION_CAPABILITIES = { notices: {}, compaction: {} } as const
+
+function registerHandlers(
+  app: ClientApp,
+  options: HandlerOptions,
+  handlers: ClientHandlers,
+): ClientApp {
+  return app
     .onNotification(CLIENT_METHODS.session_update, ({ params }) => {
       options.onUpdate(params)
     })
@@ -212,7 +235,7 @@ export async function connectHandshake(
       STATUS_UPDATE_METHOD,
       params => params as StatusUpdateParams,
       ({ params }) => {
-        const cb = statusCallback ?? options.onStatus
+        const cb = handlers.statusCallback.current ?? options.onStatus
         if (cb) {
           cb(params.status)
         }
@@ -227,13 +250,39 @@ export async function connectHandshake(
     .onRequest(CLIENT_METHODS.fs_write_text_file, () => {
       throw new Error('fs/write_text_file is not implemented yet')
     })
+}
 
-  const connection = app.connect(stream)
-  const agentInfo = await connection.agent.request(AGENT_METHODS.initialize, {
+function initializeConnection(connection: ClientConnection): Promise<InitializeResponse> {
+  return connection.agent.request(AGENT_METHODS.initialize, {
     protocolVersion: PROTOCOL_VERSION,
-    clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
+    clientCapabilities: {
+      fs: { ...FS_CAPABILITIES },
+      session: { ...SESSION_CAPABILITIES },
+    },
     clientInfo: { name: 'openclaude-studio', version: '0.0.0' },
-  })
+  }) as Promise<InitializeResponse>
+}
+
+function subscribeStatus(
+  handlers: ClientHandlers,
+  callback: (snapshot: AgentStatusSnapshot) => void,
+): () => void {
+  handlers.statusCallback.current = callback
+  return () => {
+    if (handlers.statusCallback.current === callback) {
+      handlers.statusCallback.current = null
+    }
+  }
+}
+
+export async function connectHandshake(
+  options: Pick<AgentConnectionOptions, 'url' | 'token' | 'onUpdate' | 'onPermission' | 'onStatus'>,
+): Promise<AgentHandshake> {
+  const stream = createWebSocketStream(bridgeSocketUrl(options.url, options.token))
+  const handlers: ClientHandlers = { statusCallback: { current: null } }
+  const app = registerHandlers(client({ name: 'openclaude-studio' }), options, handlers)
+  const connection = app.connect(stream)
+  const agentInfo = await initializeConnection(connection)
 
   return {
     connection,
@@ -252,12 +301,7 @@ export async function connectHandshake(
     fetchConfig: () => fetchConfig(connection),
     fetchStatus: sessionId => fetchStatus(connection, sessionId),
     patchConfig: patch => patchConfig(connection, patch),
-    onStatus: callback => {
-      statusCallback = callback
-      return () => {
-        if (statusCallback === callback) statusCallback = null
-      }
-    },
+    onStatus: callback => subscribeStatus(handlers, callback),
     close: () => connection.close(),
   }
 }
@@ -309,38 +353,11 @@ function toContentBlocks(
 export async function createAgentConnection(
   options: AgentConnectionOptions,
 ): Promise<AgentConnectionHandle> {
-  let statusCallback: ((snapshot: AgentStatusSnapshot) => void) | null = null
   const stream = createWebSocketStream(bridgeSocketUrl(options.url, options.token))
-  const app = client({ name: 'openclaude-studio' })
-    .onNotification(CLIENT_METHODS.session_update, ({ params }) => {
-      options.onUpdate(params)
-    })
-    .onNotification(
-      STATUS_UPDATE_METHOD,
-      params => params as StatusUpdateParams,
-      ({ params }) => {
-        const cb = statusCallback ?? options.onStatus
-        if (cb) {
-          cb(params.status)
-        }
-      },
-    )
-    .onRequest(CLIENT_METHODS.session_request_permission, ({ params }) =>
-      options.onPermission(params),
-    )
-    .onRequest(CLIENT_METHODS.fs_read_text_file, () => {
-      throw new Error('fs/read_text_file is not implemented yet')
-    })
-    .onRequest(CLIENT_METHODS.fs_write_text_file, () => {
-      throw new Error('fs/write_text_file is not implemented yet')
-    })
-
+  const handlers: ClientHandlers = { statusCallback: { current: null } }
+  const app = registerHandlers(client({ name: 'openclaude-studio' }), options, handlers)
   const connection = app.connect(stream)
-  const agentInfo = await connection.agent.request(AGENT_METHODS.initialize, {
-    protocolVersion: PROTOCOL_VERSION,
-    clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
-    clientInfo: { name: 'openclaude-studio', version: '0.0.0' },
-  })
+  const agentInfo = await initializeConnection(connection)
 
   // When a sessionId is supplied, resume the existing session via `session/load`
   // instead of creating a new one. The SDK exposes no public way to build an
@@ -371,12 +388,7 @@ export async function createAgentConnection(
       session,
       sessionId,
       agentInfo,
-      onStatus: callback => {
-        statusCallback = callback
-        return () => {
-          if (statusCallback === callback) statusCallback = null
-        }
-      },
+      onStatus: callback => subscribeStatus(handlers, callback),
       disconnect: () => connection.close(),
     }
   }
@@ -399,12 +411,7 @@ export async function createAgentConnection(
     session: sessionLike,
     sessionId: sessionLike.sessionId,
     agentInfo,
-    onStatus: callback => {
-      statusCallback = callback
-      return () => {
-        if (statusCallback === callback) statusCallback = null
-      }
-    },
+    onStatus: callback => subscribeStatus(handlers, callback),
     disconnect: () => connection.close(),
   }
 }

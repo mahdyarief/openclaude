@@ -192,4 +192,102 @@ describe('applySessionUpdate', () => {
     expect(withNotice.notice).toEqual({ severity: 'info', title: 'done', description: null })
     expect(withNotice.messages).toHaveLength(0)
   })
+
+  test('upserts a compaction and patches its summary/status', () => {
+    const started = applySessionUpdate(
+      base,
+      notification({
+        sessionUpdate: 'compaction_update',
+        compactionId: 'c1',
+        status: 'in_progress',
+      }),
+    )
+    expect(started.compactions['c1']).toEqual({
+      compactionId: 'c1',
+      status: 'in_progress',
+      summary: [],
+      error: null,
+    })
+
+    const done = applySessionUpdate(
+      started,
+      notification({
+        sessionUpdate: 'compaction_update',
+        compactionId: 'c1',
+        status: 'completed',
+        summary: [{ type: 'text', text: 'summarised' }],
+      }),
+    )
+    expect(done.compactions['c1']).toEqual({
+      compactionId: 'c1',
+      status: 'completed',
+      summary: [{ type: 'text', text: 'summarised' }],
+      error: null,
+    })
+  })
+
+  test('clears a compaction summary with an explicit null patch', () => {
+    const withSummary = applySessionUpdate(
+      base,
+      notification({
+        sessionUpdate: 'compaction_update',
+        compactionId: 'c1',
+        status: 'completed',
+        summary: [{ type: 'text', text: 'summarised' }],
+      }),
+    )
+    const cleared = applySessionUpdate(
+      withSummary,
+      notification({
+        sessionUpdate: 'compaction_update',
+        compactionId: 'c1',
+        status: 'completed',
+        summary: null,
+      }),
+    )
+    expect(cleared.compactions['c1']?.summary).toEqual([])
+  })
+
+  test('appends compaction summary chunks in arrival order', () => {
+    const withFirst = applySessionUpdate(
+      base,
+      notification({
+        sessionUpdate: 'compaction_summary_chunk',
+        compactionId: 'c1',
+        content: { type: 'text', text: 'part one' },
+      }),
+    )
+    const withSecond = applySessionUpdate(
+      withFirst,
+      notification({
+        sessionUpdate: 'compaction_summary_chunk',
+        compactionId: 'c1',
+        content: { type: 'text', text: ' part two' },
+      }),
+    )
+    expect(withSecond.compactions['c1']?.summary).toEqual([
+      { type: 'text', text: 'part one' },
+      { type: 'text', text: ' part two' },
+    ])
+    expect(withSecond.compactions['c1']?.status).toBe('in_progress')
+  })
+
+  test('applies a current_mode_update without dropping available modes', () => {
+    const withModes = {
+      ...base,
+      modes: {
+        currentModeId: 'default',
+        availableModes: [
+          { id: 'default', name: 'Default', description: null },
+          { id: 'plan', name: 'Plan', description: null },
+        ],
+      },
+    }
+    const switched = applySessionUpdate(
+      withModes,
+      notification({ sessionUpdate: 'current_mode_update', currentModeId: 'plan' }),
+    )
+    expect(switched.modes?.currentModeId).toBe('plan')
+    expect(switched.modes?.availableModes).toHaveLength(2)
+  })
 })
