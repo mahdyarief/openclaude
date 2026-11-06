@@ -5,6 +5,7 @@ type PermissionResult = {
   behavior: 'allow' | 'deny'
   message?: string
   decisionClassification?: string
+  updatedInput?: Record<string, unknown>
 }
 
 const responded: Array<{ toolUseId: string; decision: PermissionResult }> = []
@@ -87,6 +88,7 @@ mock.module('../utils/statusLineSnapshot.js', () => ({
 const {
   createAcpServer,
   toolUpdates,
+  permissionPresentationFor,
   userTextFromMessage,
   thinkingFromMessage,
   compactSummaryFromMessage,
@@ -292,6 +294,156 @@ describe('acp permission routing', () => {
         toolUseId: 'tool-1',
         decision: { behavior: 'allow', decisionClassification: 'user_temporary' },
       })
+    } finally {
+      await h.close()
+    }
+  })
+
+  const permissionCases: Array<{
+    optionId: string
+    kind: string
+    decision: PermissionResult
+  }> = [
+    {
+      optionId: 'allow',
+      kind: 'allow_once',
+      decision: { behavior: 'allow', decisionClassification: 'user_temporary' },
+    },
+    {
+      optionId: 'allow_always',
+      kind: 'allow_always',
+      decision: { behavior: 'allow', decisionClassification: 'user_permanent' },
+    },
+    {
+      optionId: 'reject',
+      kind: 'reject_once',
+      decision: {
+        behavior: 'deny',
+        message: 'Permission denied by ACP client',
+        decisionClassification: 'user_reject',
+      },
+    },
+    {
+      optionId: 'reject_always',
+      kind: 'reject_always',
+      decision: {
+        behavior: 'deny',
+        message: 'Permission denied by ACP client',
+        decisionClassification: 'user_reject',
+      },
+    },
+  ]
+
+  for (const { optionId, kind, decision } of permissionCases) {
+    it(`maps option ${optionId} to the right decision`, async () => {
+      const h = createHarness()
+      try {
+        h.send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })
+        await h.waitFor(m => m.id === 1, 'initialize response')
+        h.send({
+          jsonrpc: '2.0',
+          id: 2,
+          method: 'session/new',
+          params: { cwd: '/tmp' },
+        })
+        await h.waitFor(m => m.id === 2, 'session/new response')
+
+        permissionCallbacks[0]!({
+          type: 'permission_request',
+          request_id: 'req-1',
+          tool_name: 'Edit',
+          tool_use_id: 'tool-1',
+          input: { file_path: '/a.ts', old_string: 'a', new_string: 'b' },
+          uuid: 'uuid-1',
+          session_id: 'fake-session-id',
+        })
+        const request = await h.waitFor(
+          m => m.method === 'session/request_permission',
+          'permission request',
+        )
+        const params = request.params as Record<string, unknown>
+        const options = params.options as Array<{ optionId: string; kind: string }>
+        expect(options.find(o => o.optionId === optionId)?.kind).toBe(kind)
+
+        h.send({
+          jsonrpc: '2.0',
+          id: request.id,
+          result: { outcome: { outcome: 'selected', optionId } },
+        })
+        for (let i = 0; i < 100 && responded.length === 0; i++) {
+          await new Promise(resolve => setTimeout(resolve, 5))
+        }
+        expect(responded).toEqual([{ toolUseId: 'tool-1', decision }])
+      } finally {
+        await h.close()
+      }
+    })
+  }
+
+  it('sends a stateless preview in _meta and lifts _meta.answers back into updatedInput', async () => {
+    const h = createHarness()
+    try {
+      h.send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })
+      await h.waitFor(m => m.id === 1, 'initialize response')
+      h.send({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'session/new',
+        params: { cwd: '/tmp' },
+      })
+      await h.waitFor(m => m.id === 2, 'session/new response')
+
+      permissionCallbacks[0]!({
+        type: 'permission_request',
+        request_id: 'req-1',
+        tool_name: 'Edit',
+        tool_use_id: 'tool-1',
+        input: {
+          file_path: '/a.ts',
+          old_string: 'const a = 1',
+          new_string: 'const a = 2',
+        },
+        uuid: 'uuid-1',
+        session_id: 'fake-session-id',
+      })
+      const request = await h.waitFor(
+        m => m.method === 'session/request_permission',
+        'permission request',
+      )
+      const params = request.params as Record<string, unknown>
+      const meta = params._meta as Record<string, unknown>
+      const preview = meta.preview as Record<string, unknown>
+      expect(preview.title).toBe('Edit file')
+      expect(preview.diff).toEqual({
+        path: '/a.ts',
+        oldText: 'const a = 1',
+        newText: 'const a = 2',
+      })
+
+      h.send({
+        jsonrpc: '2.0',
+        id: request.id,
+        result: {
+          outcome: {
+            outcome: 'selected',
+            optionId: 'allow',
+            _meta: { answers: { q1: 'yes' } },
+          },
+        },
+      })
+      for (let i = 0; i < 100 && responded.length === 0; i++) {
+        await new Promise(resolve => setTimeout(resolve, 5))
+      }
+      expect(responded).toEqual([
+        {
+          toolUseId: 'tool-1',
+          decision: {
+            behavior: 'allow',
+            decisionClassification: 'user_temporary',
+            updatedInput: { answers: { q1: 'yes' } },
+          },
+        },
+      ])
     } finally {
       await h.close()
     }
@@ -700,4 +852,78 @@ describe('acp M1 JSON-RPC fixture', () => {
       ]
     }
   })
+})
+
+describe('permissionPresentationFor', () => {
+  const cases: Array<{
+    tool: string
+    input: Record<string, string>
+    title: string
+    summary?: string
+    plan?: boolean
+    diff?: boolean
+    diffPath?: string
+  }> = [
+    { tool: 'Bash', input: { command: 'pnpm test' }, title: 'Run command', summary: 'pnpm test' },
+    {
+      tool: 'PowerShell',
+      input: { command: 'Get-ChildItem' },
+      title: 'Run PowerShell command',
+      summary: 'Get-ChildItem',
+    },
+    {
+      tool: 'Edit',
+      input: { file_path: '/a.ts', old_string: 'a', new_string: 'b' },
+      title: 'Edit file',
+      summary: '/a.ts',
+      diff: true,
+    },
+    {
+      tool: 'Write',
+      input: { file_path: '/b.ts', content: 'x' },
+      title: 'Write file',
+      summary: '/b.ts',
+      diff: true,
+    },
+    {
+      tool: 'NotebookEdit',
+      input: { notebook_path: '/n.ipynb', new_source: 'x' },
+      title: 'Edit notebook',
+      summary: '/n.ipynb',
+      diff: true,
+      diffPath: '/n.ipynb',
+    },
+    { tool: 'WebFetch', input: { url: 'https://example.com' }, title: 'Fetch web page', summary: 'https://example.com' },
+    { tool: 'Skill', input: { skill: 'commit' }, title: 'Run skill', summary: 'commit' },
+    {
+      tool: 'ExitPlanMode',
+      input: { plan: '1. do it' },
+      title: 'Approve plan',
+      plan: true,
+    },
+    { tool: 'EnterPlanMode', input: {}, title: 'Enter plan mode' },
+    {
+      tool: 'Monitor',
+      input: { description: 'wait for build' },
+      title: 'Monitor background work',
+      summary: 'wait for build',
+    },
+    { tool: 'ReviewArtifact', input: { file_path: '/r.md' }, title: 'Review artifact', summary: '/r.md' },
+    { tool: 'Read', input: { file_path: '/a.ts' }, title: 'Read file', summary: '/a.ts' },
+    { tool: 'Glob', input: { pattern: '**/*.ts' }, title: 'Search files (Glob)', summary: '**/*.ts' },
+    { tool: 'Grep', input: { pattern: 'TODO' }, title: 'Search files (Grep)', summary: 'TODO' },
+    { tool: 'Sandbox', input: { command: 'ls' }, title: 'Run Sandbox' },
+  ]
+
+  for (const { tool, input, title, summary, plan, diff, diffPath } of cases) {
+    it(`maps ${tool} to a structured preview`, () => {
+      const preview = permissionPresentationFor(tool, 't1', input)
+      expect(preview.title).toBe(title)
+      if (summary !== undefined) expect(preview.summary).toBe(summary)
+      if (plan) expect(preview.plan).toBe(input.plan)
+      else expect(preview.plan).toBeNull()
+      if (diff) expect(preview.diff?.path).toBe(diffPath ?? input.file_path)
+      else expect(preview.diff).toBeNull()
+    })
+  }
 })

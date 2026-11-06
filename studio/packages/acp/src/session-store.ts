@@ -26,7 +26,11 @@ export function createSessionStore(
         ...state,
         permissionQueue: [
           ...state.permissionQueue,
-          { ...request, questions: request.questions ?? null },
+          {
+            ...request,
+            questions: request.questions ?? null,
+            preview: request.preview ?? null,
+          },
         ],
       }))
     },

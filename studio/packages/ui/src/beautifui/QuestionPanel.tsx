@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { AgentQuestion } from "@openclaude-studio/acp";
 import { Button } from "./Button.js";
 import { ChoiceRow } from "./ChoiceRow.js";
+import { Input } from "../shadcn/input.js";
 import { cn } from "../lib/cn.js";
 
 /** Synthetic option value meaning the user typed a free-text answer. */
@@ -171,12 +172,12 @@ export function QuestionPanel({
           />
           {hasOther ? (
             <div className="flex flex-col gap-1">
-              <input
+              <Input
                 type="text"
                 value={custom}
                 onChange={event => setCustomValue(event.target.value)}
                 placeholder={labels?.customPlaceholder ?? "Type your answer…"}
-                className="w-full rounded-[var(--radius-control)] border border-line bg-inset px-2 py-1 text-[11.5px] text-ink focus:border-accent focus:outline-none"
+                className="text-[11.5px]"
                 autoFocus
               />
               <p className="text-[10.5px] text-ink-3">

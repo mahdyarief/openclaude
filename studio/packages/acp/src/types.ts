@@ -39,6 +39,22 @@ export type AgentQuestion = {
   options: Array<{ label: string }>
 }
 
+/** Stateless, display-only description of what a permission request will do.
+ *  The ACP server derives it purely from the tool input and sends it via
+ *  `_meta.preview`; the client never reads it back into a decision. */
+export type PermissionPreview = {
+  /** short human-readable title, e.g. "Edit file" */
+  title: string
+  /** one-line summary of the action, e.g. the shell command or URL */
+  summary: string | null
+  /** dialog-specific key/value details in display order */
+  fields: Array<{ label: string; value: string }>
+  /** unified diff when the tool edits a file */
+  diff: { path: string; oldText: string | null; newText: string } | null
+  /** plan text for plan-mode approvals */
+  plan: string | null
+}
+
 export type PermissionRequest = {
   requestId: number | string
   sessionId: string
@@ -46,6 +62,8 @@ export type PermissionRequest = {
   options: PermissionOption[]
   /** present when the tool is `AskUserQuestion`; drives the ApprovalCard UI */
   questions?: AgentQuestion[] | null
+  /** display-only presentation of the tool's effect, from `_meta.preview` */
+  preview?: PermissionPreview | null
 }
 
 /** A slash command the agent advertised via `available_commands_update`. */

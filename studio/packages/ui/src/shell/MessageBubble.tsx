@@ -65,7 +65,11 @@ function ToolDetail({
   )
 }
 
-function DiffLines({ diff }: { diff: DiffBlock }) {
+export function DiffLines({
+  diff,
+}: {
+  diff: { oldText?: string | null; newText: string }
+}) {
   const removed = diff.oldText == null ? [] : diff.oldText.split('\n')
   const added = diff.newText.split('\n')
   return (

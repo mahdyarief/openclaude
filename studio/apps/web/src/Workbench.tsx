@@ -7,6 +7,7 @@ import {
   DocumentViewer,
   FileExplorer,
   LoadingState,
+  PermissionPreviewPanel,
   PromptBar,
   ProjectRail,
   ResourceUsageFooter,
@@ -469,9 +470,14 @@ function SessionPane({
           aria-modal="true"
           className="m-3 rounded-[var(--radius-card)] border border-line bg-surface p-4 shadow-[var(--shadow-card)]"
         >
-          <p className="mb-3 text-sm text-ink-2">
-            The agent wants to run <code>{pendingPermission.toolCall.toolCallId}</code>.
-          </p>
+          {pendingPermission.preview ? (
+            <PermissionPreviewPanel preview={pendingPermission.preview} />
+          ) : (
+            <p className="mb-3 text-sm text-ink-2">
+              The agent wants to run{' '}
+              <code>{pendingPermission.toolCall.toolCallId}</code>.
+            </p>
+          )}
           {error ? (
             <p role="alert" className="mb-3 text-sm text-red">
               {error}
@@ -481,7 +487,7 @@ function SessionPane({
             {pendingPermission.options.map(option => (
               <Button
                 key={option.optionId}
-                variant="accent"
+                variant={option.kind.startsWith('allow') ? 'accent' : 'outline'}
                 size="sm"
                 onClick={() => respondPermission(option.optionId)}
               >

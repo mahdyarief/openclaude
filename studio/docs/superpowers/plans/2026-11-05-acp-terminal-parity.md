@@ -236,17 +236,62 @@ terbuka secara default.
 **Tujuan:** dari dua tombol `allow`/`reject` (`acp.ts:340–345`) ke ~26 dialog terminal
 (`src/components/permissions/`).
 
-- [ ] Tambah `allow_always` / `reject_always` (enum `PermissionOption.kind` mendukungnya)
-- [ ] Kirim diff/preview/plan lewat `_meta` mengikuti pola `AskUserQuestion`
+- [x] Tambah `allow_always` / `reject_always` (enum `PermissionOption.kind` mendukungnya)
+- [x] Kirim diff/preview/plan lewat `_meta` mengikuti pola `AskUserQuestion`
       (`_meta.questions` → `_meta.answers` → `updatedInput.answers`, `acp.ts:336–363`)
-- [ ] Petakan dialog: Bash, FileEdit/Write, NotebookEdit, SedEdit, WebFetch, Skill, Sandbox,
+- [x] Petakan dialog: Bash, FileEdit/Write, NotebookEdit, SedEdit, WebFetch, Skill, Sandbox,
       ComputerUse, Enter/ExitPlanMode, Monitor, Fallback, PowerShell, ReviewArtifact
-- [ ] `QuestionPanel` free-text "Other" pakai primitive shadcn input, bukan `<input>` buatan
+- [x] `QuestionPanel` free-text "Other" pakai primitive shadcn input, bukan `<input>` buatan
       sendiri (`QuestionPanel.tsx:174`)
-- [ ] Test: tiap opsi kind + round-trip `_meta`
+- [x] Test: tiap opsi kind + round-trip `_meta`
 
 **Selesai jika:** approval menampilkan "file ini akan diubah begini, setuju / selalu izinkan /
-tolak", bukan sekadar judul tool.
+tolak", bukan sekadar judul tool. ✅ Terpenuhi: dialog `Workbench` merender
+`PermissionPreviewPanel` (judul + ringkasan + field + diff before/after + plan) dan empat
+tombol `Allow` / `Always allow` / `Reject` / `Always reject`.
+
+**Catatan M3 (implementasi & keterbatasan):**
+
+- Server ACP tetap *stateless mapper* (Keputusan §5): `permissionPresentationFor(name,
+  toolCallId, input)` di `acp.ts` menurunkan preview murni dari `message.input`, karena
+  `session/request_permission` tidak membawa tool result. Preview dikirim sebagai
+  `_meta.preview` (berdampingan `_meta.questions`); kunci top-level selain `_meta` akan
+  dibuang Zod parser SDK, jadi `_meta` satu-satunya kanal ekstensi.
+- Pemetaan eksplisit: `Bash`/`PowerShell`, `Edit`/`Write`/`NotebookEdit`, `WebFetch`,
+  `Skill`, `EnterPlanMode`/`ExitPlanMode`, `Monitor`, `ReviewArtifact`, `Read`/`Glob`/`Grep`.
+  `SedEdit` bukan tool tersendiri melainkan perintah `Bash sed -i` dengan marker
+  `_simulatedSedEdit`; diff-nya sudah dihasilkan `toolPresentationFor` (M2) dan diteruskan
+  lewat kasus `Bash`. `Sandbox`/`ComputerUse`/`Workflow`/`Fallback` tidak punya nama tool
+  khusus di dispatcher terminal (`PermissionRequest.tsx`), sehingga jatuh ke fallback
+  generik `Run <nama>` + daftar field skalar + diff bila ada — ini memang bentuk dialog
+  Fallback terminal, bukan dialog terpisah yang hilang.
+- Klien: `PermissionPreview` (`packages/acp/src/types.ts`) → parser boundary
+  `parsePermissionPreview` (`use-agent-session.ts`) → normalisasi antrean
+  (`session-store.ts`) → `PermissionPreviewPanel` hanya komposisi primitif
+  shadcn/beautifui (`Card`, `Collapsible`, `Badge`, `Button`, `DiffLines`) tanpa kontrol
+  buatan sendiri, semua warna/radius via token.
+- **Keterbatasan `allow_always` (jujur, di luar scope M3):** opsi ini menghasilkan
+  `decisionClassification: 'user_permanent'` (label telemetri/UI), tetapi **tidak** membuat
+  aturan izin persisten lintas-panggilan. `PermissionResolveDecision`
+  (`src/entrypoints/sdk/permissions.ts:112–115`) hanya mendukung `behavior: allow|deny` +
+  `updatedInput`, dan `v2.ts respondToPermission` (baris 512–530) meng-hardcode
+  `decisionReason` serta membuang `updatedPermissions`. Persistensi aturan butuh perubahan
+  layer SDK di luar M3; M3 hanya menyampaikan niat "selalu izinkan" dengan benar.
+
+**Verifikasi M3 (semua `EXIT=0`, output tidak dipipe/truncate):**
+
+- `bun test src/entrypoints/acp.test.ts` → 39 pass / 0 fail (4 kind + round-trip `_meta` +
+  15 baris pemetaan preview).
+- `corepack pnpm -r typecheck` (dari `studio/`) → 4 workspace Done.
+- `corepack pnpm exec vitest run` (dari `studio/`) → 28 file / 191 test pass, termasuk
+  `PermissionPreviewPanel.test.tsx` (3) & `QuestionPanel.test.tsx` (6).
+- `corepack pnpm -r build` (dari `studio/`) → Done.
+- `bun run typecheck` → `EXIT=0`; `bun run build` → `EXIT=0` (dist cli/sdk/acp/acp-web +
+  Studio).
+- `bun run check` → `CHECK_EXIT=0`. Satu baris `(fail)` pada fixture bersarang
+  `formatDescriptionWithSource` (`QueryEngine.autoCompactCooldown.test.ts`) adalah kegagalan
+  pre-existing yang sudah direproduksi di base `f70ae71a` dan tidak memengaruhi exit code;
+  bukan regresi M3.
 
 ### M4 — Paritas slash command `local-jsx`
 

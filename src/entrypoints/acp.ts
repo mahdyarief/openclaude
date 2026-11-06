@@ -604,6 +604,149 @@ function toolPresentationFor(
   }
 }
 
+type AcpPermissionPreview = {
+  title: string
+  summary: string | null
+  fields: Array<{ label: string; value: string }>
+  diff: { path: string; oldText: string | null; newText: string } | null
+  plan: string | null
+}
+
+// The ACP server is a stateless mapper: a permission request carries only the
+// tool input, never a result, so the preview is derived from that input alone.
+// The terminal's ~26 permission dialogs are collapsed into one display shape;
+// each tool lists the input fields its dialog shows.
+export function permissionPresentationFor(
+  name: string,
+  toolCallId: string,
+  input: Record<string, unknown>,
+): AcpPermissionPreview {
+  const str = (value: unknown): string | null =>
+    typeof value === 'string' && value.length > 0 ? value : null
+  const field = (label: string, value: unknown): { label: string; value: string } | null => {
+    const text = str(value)
+    return text === null ? null : { label, value: text }
+  }
+  const fields = (...entries: Array<{ label: string; value: string } | null>) =>
+    entries.filter((entry): entry is { label: string; value: string } => entry !== null)
+
+  // Reuse the M2 structural mapper for file diffs (Edit/Write/NotebookEdit and
+  // Bash/PowerShell sed edits) so previews and tool_call content stay in sync.
+  const presentation = toolPresentationFor(name, toolCallId, input)
+  const diffBlock = presentation.content?.find(
+    (block): block is AcpDiffContent => block.type === 'diff',
+  )
+  const diff = diffBlock
+    ? {
+        path: diffBlock.path,
+        oldText: diffBlock.oldText ?? null,
+        newText: diffBlock.newText,
+      }
+    : null
+
+  const scalarFallback = (): Array<{ label: string; value: string }> =>
+    Object.entries(input)
+      .filter(([key]) => !key.startsWith('_'))
+      .map(([key, value]) => field(key, typeof value === 'object' ? JSON.stringify(value) : value))
+      .filter((entry): entry is { label: string; value: string } => entry !== null)
+
+  switch (name) {
+    case 'Bash':
+    case 'PowerShell':
+      return {
+        title: name === 'Bash' ? 'Run command' : 'Run PowerShell command',
+        summary: str(input.command),
+        fields: fields(field('Description', input.description), field('Path', input.file_path)),
+        diff,
+        plan: null,
+      }
+    case 'Edit':
+    case 'Write':
+    case 'NotebookEdit':
+      return {
+        title:
+          name === 'Edit'
+            ? 'Edit file'
+            : name === 'Write'
+              ? 'Write file'
+              : 'Edit notebook',
+        summary: str(input.file_path) ?? str(input.notebook_path),
+        fields: fields(
+          field('File', name === 'NotebookEdit' ? input.notebook_path : input.file_path),
+          field('Replace all', input.replace_all === true ? 'yes' : null),
+        ),
+        diff,
+        plan: null,
+      }
+    case 'WebFetch':
+      return {
+        title: 'Fetch web page',
+        summary: str(input.url),
+        fields: fields(field('Prompt', input.prompt)),
+        diff: null,
+        plan: null,
+      }
+    case 'Skill':
+      return {
+        title: 'Run skill',
+        summary: str(input.skill),
+        fields: fields(field('Args', input.args)),
+        diff: null,
+        plan: null,
+      }
+    case 'ExitPlanMode':
+      return {
+        title: 'Approve plan',
+        summary: null,
+        fields: [],
+        diff: null,
+        plan: str(input.plan),
+      }
+    case 'EnterPlanMode':
+      return {
+        title: 'Enter plan mode',
+        summary: null,
+        fields: [],
+        diff: null,
+        plan: null,
+      }
+    case 'Monitor':
+      return {
+        title: 'Monitor background work',
+        summary: str(input.description) ?? str(input.command),
+        fields: fields(field('Timeout', input.timeout)),
+        diff: null,
+        plan: null,
+      }
+    case 'ReviewArtifact':
+      return {
+        title: 'Review artifact',
+        summary: str(input.file_path) ?? str(input.path),
+        fields: fields(field('Label', input.label)),
+        diff: null,
+        plan: null,
+      }
+    case 'Read':
+    case 'Glob':
+    case 'Grep':
+      return {
+        title: name === 'Read' ? 'Read file' : `Search files (${name})`,
+        summary: str(input.file_path) ?? str(input.pattern) ?? str(input.glob),
+        fields: fields(field('Path', input.path), field('Query', input.query)),
+        diff: null,
+        plan: null,
+      }
+    default:
+      return {
+        title: `Run ${name}`,
+        summary: null,
+        fields: scalarFallback(),
+        diff,
+        plan: null,
+      }
+  }
+}
+
 // Every tool_use opens a tool_call and every tool_result closes it with a
 // tool_call_update. Without the closing update the client never learns a tool
 // finished and only sees its result after reloading history from disk.
@@ -689,10 +832,16 @@ export function createAcpServer(
         updatedInput: { answers },
       }
     }
-    if (outcome.outcome === 'selected' && optionId !== null && optionId.startsWith('allow')) {
+    if (outcome.outcome === 'selected' && optionId === 'allow') {
       return {
         behavior: 'allow',
         decisionClassification: 'user_temporary',
+      }
+    }
+    if (outcome.outcome === 'selected' && optionId === 'allow_always') {
+      return {
+        behavior: 'allow',
+        decisionClassification: 'user_permanent',
       }
     }
     return {
@@ -836,8 +985,15 @@ export function createAcpServer(
       ? []
       : [
           { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+          { optionId: 'allow_always', name: 'Always allow', kind: 'allow_always' },
           { optionId: 'reject', name: 'Reject', kind: 'reject_once' },
+          { optionId: 'reject_always', name: 'Always reject', kind: 'reject_always' },
         ]
+    const preview = permissionPresentationFor(
+      message.tool_name,
+      message.tool_use_id,
+      inputs,
+    )
 
     write({
       jsonrpc: '2.0',
@@ -852,10 +1008,13 @@ export function createAcpServer(
           rawInput: message.input,
         },
         options,
-        // ACP's schema only allows `_meta` for extensions; a top-level
-        // `questions` key is stripped by the SDK's Zod parser before the
-        // client ever sees it.
-        ...(questions ? { _meta: { questions } } : {}),
+        // ACP's schema only allows `_meta` for extensions; top-level
+        // `questions`/`preview` keys are stripped by the SDK's Zod parse
+        // before the client ever sees them.
+        _meta: {
+          ...(questions ? { questions } : {}),
+          preview,
+        },
       },
     })
   }

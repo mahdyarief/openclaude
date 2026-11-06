@@ -14,6 +14,7 @@ import {
   type AgentConfigSnapshot,
   type AgentStatusSnapshot,
   type ConnectionStatus,
+  type PermissionPreview,
   type PermissionRequest,
   type RequestPermissionRequest,
   type RequestPermissionResponse,
@@ -116,6 +117,37 @@ const HANDSHAKE_TIMEOUT_MS = 10000
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function parsePermissionPreview(value: unknown): PermissionPreview | null {
+  if (!isRecord(value) || typeof value.title !== 'string') return null
+  const fields = Array.isArray(value.fields)
+    ? value.fields
+        .filter(isRecord)
+        .map(field => ({
+          label: typeof field.label === 'string' ? field.label : '',
+          value: typeof field.value === 'string' ? field.value : '',
+        }))
+        .filter(field => field.label.length > 0 && field.value.length > 0)
+    : []
+  const rawDiff = isRecord(value.diff) ? value.diff : null
+  const diff =
+    rawDiff &&
+    typeof rawDiff.path === 'string' &&
+    typeof rawDiff.newText === 'string'
+      ? {
+          path: rawDiff.path,
+          oldText: typeof rawDiff.oldText === 'string' ? rawDiff.oldText : null,
+          newText: rawDiff.newText,
+        }
+      : null
+  return {
+    title: value.title,
+    summary: typeof value.summary === 'string' ? value.summary : null,
+    fields,
+    diff,
+    plan: typeof value.plan === 'string' ? value.plan : null,
+  }
 }
 
 export function useAgentSession(options: AgentSessionOptions): AgentSession {
@@ -225,6 +257,9 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
           }))
           .filter(entry => entry.question.length > 0)
       : null
+    const preview = parsePermissionPreview(
+      isRecord(rawMeta) ? rawMeta.preview : undefined,
+    )
     const permission: PermissionRequest = {
       requestId: request.toolCall.toolCallId,
       sessionId: request.sessionId,
@@ -235,6 +270,7 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
         kind: option.kind,
       })),
       ...(questions && questions.length > 0 ? { questions } : {}),
+      ...(preview ? { preview } : {}),
     }
     store?.enqueuePermission(permission)
     if (store) setState(store.getState())
