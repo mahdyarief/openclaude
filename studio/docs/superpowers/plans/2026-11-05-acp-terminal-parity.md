@@ -436,13 +436,14 @@ Pengecualian terdokumentasi (semua diverifikasi terhadap base, bukan regresi M5)
   sukses.
 - `bun run security:pr-scan -- --base FETCH_HEAD --head HEAD` tidak dapat dijalankan apa
   adanya: `scripts/pr-intent-scan.ts` memanggil `spawnSync('git', ...)` tanpa `maxBuffer`,
-  sehingga diff PR 2.596.810 byte (identik pada M4 tip `b8568d3a`, merge-base
-  `5cd11336`) melewati batas default 1 MB dan skrip gagal dengan
-  `PR intent scan failed: git diff failed`. Salinan skrip identik dengan
-  `maxBuffer: 64 * 1024 * 1024` pada kedua `spawnSync` (di `/tmp`, repo tidak diubah)
-  menghasilkan **14 medium / 0 high**, seluruhnya pada baris yang sudah ada sebelumnya
-  (`release.yml`, `scripts/acp-web-server.mjs`, `scripts/build.ts`,
-  `src/tools/FileReadTool/prompt.vision.test.ts:138`). Tidak ada temuan pada file M5.
+  sehingga diff PR 2.654.006 byte (merge-base `5cd11336`, sudah termasuk commit M5;
+  2.596.810 byte pada M4 tip `b8568d3a`) melewati batas default 1 MB dan skrip gagal
+  dengan `PR intent scan failed: git diff failed`. Salinan skrip identik dengan
+  `maxBuffer: 64 * 1024 * 1024` pada kedua `spawnSync` (di `/tmp`, repo tidak diubah),
+  dijalankan ulang setelah commit M5, berakhir `EXIT=0` dengan
+  **14 medium / 0 high**: `release.yml` (2), `scripts/acp-web-server.mjs` (4),
+  `scripts/build.ts` (7), `src/tools/FileReadTool/prompt.vision.test.ts:138` (1).
+  Seluruhnya pada baris yang sudah ada sebelumnya; tidak ada temuan pada file M5.
   Perbaikan `maxBuffer` sengaja tidak dilakukan di M5 agar perubahan tetap fokus.
 
 ### M6 — Build & deploy
