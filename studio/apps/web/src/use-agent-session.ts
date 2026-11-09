@@ -8,11 +8,15 @@ import {
   fetchSessionHistory,
   fetchStatus,
   patchConfig,
+  promptParts,
   type AgentConnectionHandle,
+  type AgentConnectionOptions,
   type AgentHandshake,
   type AgentConfigPatch,
   type AgentConfigSnapshot,
+  type ContentBlock,
   type AgentStatusSnapshot,
+  type AgentSessionMethods,
   type ConnectionStatus,
   type PermissionPreview,
   type PermissionRequest,
@@ -35,6 +39,8 @@ export type AgentSessionOptions = {
   active?: boolean
   /** how long a hidden, finished session may keep its agent socket open */
   idleTimeoutMs?: number
+  /** MCP servers attached to each ACP session opened by this hook */
+  mcpServers?: AgentConnectionOptions['mcpServers']
 }
 
 export type SessionMode =
@@ -86,7 +92,8 @@ type AgentSession = {
   /** true while a manual reload is re-handshaking with the agent */
   reloading: boolean
   sessionId: string | null
-  sendPrompt: (text: string) => void
+  /** Send a text prompt or an ACP content-block array (attachments). */
+  sendPrompt: (prompt: string | ContentBlock[]) => void
   cancel: () => void
   /** Lazily start the session if it does not yet exist. */
   ensureSession: () => Promise<string | null>
@@ -111,6 +118,13 @@ type AgentSession = {
    * unsubscribe function.
    */
   onStatus: (callback: (snapshot: AgentStatusSnapshot) => void) => () => void
+  /** Typed ACP session/auth methods from the current handshake or connection. */
+  sessions: AgentSessionMethods | null
+  /** MCP servers attached to the current session and their approval state. */
+  mcpServers: AgentConnectionHandle['mcpServers']
+  /** ACP sessions advertised by the agent, kept in the existing workspace list seam. */
+  remoteSessionList: Array<{ sessionId: string; cwd: string }>
+  refreshSessionList: () => Promise<void>
 }
 
 const HANDSHAKE_TIMEOUT_MS = 10000
@@ -159,11 +173,14 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
     permissionMode,
     active = true,
     idleTimeoutMs = 5 * 60_000,
+    mcpServers,
   } = options
   // Read at session/new and session/load time. Kept in a ref so flipping the
   // mode does not tear down a live connection mid-turn.
   const permissionModeRef = useRef(permissionMode)
   permissionModeRef.current = permissionMode
+  const mcpServersRef = useRef(mcpServers)
+  mcpServersRef.current = mcpServers
   const [state, setState] = useState<SessionState>(() => emptySession('', ''))
   // A pane that mounts hidden (restored background tab) starts asleep instead of
   // connecting, so it does not spawn a bridge agent child until it is viewed.
@@ -183,6 +200,7 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
   // True while a manual reload is re-establishing the handshake; the pane shows
   // an explicit "Reloading…" state so the action is never silent.
   const [reloading, setReloading] = useState(false)
+  const [remoteSessionList, setRemoteSessionList] = useState<Array<{ sessionId: string; cwd: string }>>([])
   const handleRef = useRef<AgentConnectionHandle | null>(null)
   const handshakeRef = useRef<AgentHandshake | null>(null)
   // Guards against a stale (already-finished) handshake's `connect` resolving
@@ -327,6 +345,7 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
             token,
             cwd,
             sessionId: mode.sessionId,
+            ...(mcpServersRef.current ? { mcpServers: mcpServersRef.current } : {}),
             ...(permissionModeRef.current
               ? { permissionMode: permissionModeRef.current }
               : {}),
@@ -341,15 +360,11 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
           return
         }
         handleRef.current = handle
-        // `session/load` resumes the agent's context but ACP does not replay
-        // prior messages, so the transcript would stay empty. Read the JSONL
-        // from the bridge and seed the store before adopting it.
+        // `session/load` replays prior messages as ACP session notifications;
+        // `applyUpdate` consumes them through the same path as live updates.
+        // The JSONL read remains a fallback for older agents that do not replay.
         setLoadingHistory(true)
         try {
-          // The bridge resolves session history from the session id across
-          // every project dir, but the first read can still race a cold bridge
-          // (a just-restored tab that opened before `byPath` finished loading).
-          // Retry once before giving up so the transcript does not render blank.
           let history = await fetchSessionHistory(url, token, cwd, mode.sessionId)
           if (history.length === 0) {
             await new Promise(resolve => setTimeout(resolve, 350))
@@ -358,11 +373,12 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
             }
           }
           if (nonce === connectNonce.current && history.length > 0) {
-            store.setState(state => ({ ...state, messages: history }))
+            store.setState(state => ({
+              ...state,
+              messages: state.messages.length > 0 ? state.messages : history,
+            }))
           }
         } catch (cause) {
-          // History is a nicety; a missing/unreadable file must not block the
-          // live session from becoming usable.
           if (cause instanceof Error) console.warn('session history load failed:', cause.message)
         }
         if (nonce !== connectNonce.current) {
@@ -385,6 +401,7 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
           onUpdate: applyUpdate,
           onPermission: requestPermission,
           onStatus: emitStatus,
+          ...(mcpServersRef.current ? { mcpServers: mcpServersRef.current } : {}),
         }),
         timeout,
       ])
@@ -546,6 +563,15 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
           sessionId: session.sessionId,
           agentInfo: handshake.agentInfo,
           onStatus: handshake.onStatus,
+          mcpServers: handshake.mcpServers,
+          authenticate: handshake.authenticate,
+          listSessions: handshake.listSessions,
+          deleteSession: handshake.deleteSession,
+          resumeSession: handshake.resumeSession,
+          forkSession: handshake.forkSession,
+          closeSession: handshake.closeSession,
+          setSessionMode: handshake.setSessionMode,
+          setConfigOption: handshake.setConfigOption,
           disconnect: () => handshake.connection.close(),
         }
         adoptSession(session.sessionId, store)
@@ -568,7 +594,7 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
     return creation
   }, [url, cwd, adoptSession, connectNonce])
 
-  const sendPrompt = useCallback((text: string) => {
+  const sendPrompt = useCallback((prompt: string | ContentBlock[]) => {
     void (async () => {
       // Show the thinking indicator immediately. On a cold session this covers
       // the delay of reattaching (reconnect) and spawning the agent child
@@ -600,13 +626,13 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
           stopReason: null,
           messages: [
             ...state.messages,
-            { id: `optimistic-${Date.now()}`, role: 'user', parts: [{ kind: 'text', text }] },
+            { id: `optimistic-${Date.now()}`, role: 'user', parts: promptParts(prompt) },
           ],
         }))
         setState(store.getState())
       }
       void handle.session
-        .prompt(text)
+        .prompt(prompt)
         .then(response => {
           // The turn is over. `session/prompt` resolves once the turn ends, but
           // its final `session/update` notifications may still be queued, so
@@ -717,6 +743,18 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
     [],
   )
 
+  const refreshSessionList = useCallback(async () => {
+    const connection = handshakeRef.current ?? handleRef.current
+    if (!connection) return
+    const result = await connection.listSessions()
+    setRemoteSessionList(
+      result.sessions.filter(
+        (session): session is { sessionId: string; cwd: string } =>
+          typeof session.sessionId === 'string' && typeof session.cwd === 'string',
+      ),
+    )
+  }, [])
+
   return {
     state,
     status,
@@ -738,5 +776,9 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
     setConfig,
     getStatus,
     onStatus,
+    sessions: handshakeRef.current ?? handleRef.current,
+    mcpServers: (handshakeRef.current ?? handleRef.current)?.mcpServers ?? [],
+    remoteSessionList,
+    refreshSessionList,
   }
 }

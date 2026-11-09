@@ -13,8 +13,36 @@ import {
   type PromptResponse,
   type SendRequestOptions,
   type ClientApp,
+  type CreateTerminalRequest,
+  type CreateTerminalResponse,
+  type TerminalOutputRequest,
+  type TerminalOutputResponse,
+  type WaitForTerminalExitRequest,
+  type WaitForTerminalExitResponse,
+  type KillTerminalRequest,
+  type KillTerminalResponse,
+  type ReleaseTerminalRequest,
+  type ReleaseTerminalResponse,
+  type CreateElicitationRequest,
+  type CreateElicitationResponse,
+  type AuthenticateRequest,
+  type AuthenticateResponse,
+  type ListSessionsRequest,
+  type ListSessionsResponse,
+  type DeleteSessionRequest,
+  type DeleteSessionResponse,
+  type ResumeSessionRequest,
+  type ResumeSessionResponse,
+  type CloseSessionRequest,
+  type CloseSessionResponse,
+  type SetSessionModeRequest,
+  type SetSessionModeResponse,
+  type SetSessionConfigOptionRequest,
+  type SetSessionConfigOptionResponse,
+  type McpServer,
 } from '@agentclientprotocol/sdk'
 import { createWebSocketStream } from '@agentclientprotocol/sdk/experimental/ws-client'
+import { readWorkspaceFile, saveWorkspaceFile, terminalRequest } from './project.js'
 
 export type AgentConnectionOptions = {
   url: string
@@ -34,6 +62,15 @@ export type AgentConnectionOptions = {
   sessionId?: string
   /** how much the agent may act without asking; forwarded to the ACP session */
   permissionMode?: string
+  /** MCP servers to attach to every session opened on this connection. */
+  mcpServers?: Array<McpServer>
+}
+
+/** MCP connection/approval state surfaced through the existing status snapshot. */
+export type McpServerStatus = {
+  name: string
+  status: 'pending' | 'approved' | 'rejected' | 'error'
+  error?: string
 }
 
 /**
@@ -67,6 +104,18 @@ export type ActiveSessionLike = {
   dispose: () => void
 }
 
+/** Typed ACP v1 agent requests exposed by both connection paths. */
+export type AgentSessionMethods = {
+  authenticate: (params: AuthenticateRequest, options?: SendRequestOptions) => Promise<AuthenticateResponse>
+  listSessions: (params?: ListSessionsRequest, options?: SendRequestOptions) => Promise<ListSessionsResponse>
+  deleteSession: (params: DeleteSessionRequest, options?: SendRequestOptions) => Promise<DeleteSessionResponse>
+  resumeSession: (params: ResumeSessionRequest, options?: SendRequestOptions) => Promise<ResumeSessionResponse>
+  forkSession: (params: { sessionId: string }, options?: SendRequestOptions) => Promise<{ sessionId: string }>
+  closeSession: (params: CloseSessionRequest, options?: SendRequestOptions) => Promise<CloseSessionResponse>
+  setSessionMode: (params: SetSessionModeRequest, options?: SendRequestOptions) => Promise<SetSessionModeResponse>
+  setConfigOption: (params: SetSessionConfigOptionRequest, options?: SendRequestOptions) => Promise<SetSessionConfigOptionResponse>
+}
+
 export type AgentConnectionHandle = {
   connection: ClientConnection
   session: ActiveSessionLike
@@ -80,7 +129,8 @@ export type AgentConnectionHandle = {
    * callback so components can mount/unmount without re-handshaking.
    */
   onStatus: (callback: (snapshot: AgentStatusSnapshot) => void) => () => void
-}
+  mcpServers: Array<McpServer & McpServerStatus>
+} & AgentSessionMethods
 
 /**
  * Open the token-gated WebSocket and answer `initialize`, returning the live
@@ -114,8 +164,10 @@ export type AgentHandshake = {
    * on every AppState change, so callers never need to poll.
    */
   onStatus: (callback: (snapshot: AgentStatusSnapshot) => void) => () => void
+  /** MCP servers attached to each session and their approval state. */
+  mcpServers: Array<McpServer & McpServerStatus>
   close: () => void
-}
+} & AgentSessionMethods
 
 /**
  * The agent-side config surface exposed by the custom `openclaude/config` ACP
@@ -187,6 +239,8 @@ export type AgentStatusSnapshot = {
   contextWindow: { usedPercent: number; tokens: number; size: number } | null
   session: { name: string | null; costUsd: number; durationMs: number }
   backgroundTasks: { total: number; running: number; labels: string[] }
+  /** MCP servers attached to the session and their connection/approval state. */
+  mcpServers?: Array<McpServerStatus>
 }
 
 const CONFIG_METHOD = 'openclaude/config'
@@ -202,8 +256,8 @@ type StatusUpdateParams = {
 
 type HandlerOptions = Pick<
   AgentConnectionOptions,
-  'onUpdate' | 'onPermission' | 'onStatus'
->
+  'onUpdate' | 'onPermission' | 'onStatus' | 'url' | 'token'
+> & { cwd?: string }
 
 type ClientHandlers = {
   /** Mutations to this callback are observed by the registered status handler. */
@@ -213,14 +267,20 @@ type ClientHandlers = {
 /**
  * The client-capabilities flag and the fs handlers live in one place so the
  * agent can never be told "fs supported" when no handler is installed.
- * Implementing an fs method in M5 means flipping its flag here.
  */
-const FS_CAPABILITIES = { readTextFile: false, writeTextFile: false } as const
+const FS_CAPABILITIES = { readTextFile: true, writeTextFile: true } as const
 
 // The notice/compaction handlers live in updates.ts rather than here, but the
 // capability must be advertised from the same handshake so the agent never
 // emits these kinds to a client that would drop them.
 const SESSION_CAPABILITIES = { notices: {}, compaction: {} } as const
+const TERMINAL_CAPABILITIES = { terminal: true } as const
+const ELICITATION_CAPABILITIES = { form: {}, url: {} } as const
+
+function workspaceRoot(options: HandlerOptions): string {
+  if (!options.cwd) throw new Error('workspace root is required for fs requests')
+  return options.cwd
+}
 
 function registerHandlers(
   app: ClientApp,
@@ -244,11 +304,37 @@ function registerHandlers(
     .onRequest(CLIENT_METHODS.session_request_permission, ({ params }) =>
       options.onPermission(params),
     )
-    .onRequest(CLIENT_METHODS.fs_read_text_file, () => {
-      throw new Error('fs/read_text_file is not implemented yet')
+    .onRequest(CLIENT_METHODS.fs_read_text_file, async ({ params }) => {
+      const file = await readWorkspaceFile(options.url, options.token, workspaceRoot(options), params.path)
+      if (file.truncated) throw new Error(`file is not a readable text preview: ${params.path}`)
+      return { content: file.text }
     })
-    .onRequest(CLIENT_METHODS.fs_write_text_file, () => {
-      throw new Error('fs/write_text_file is not implemented yet')
+    .onRequest(CLIENT_METHODS.fs_write_text_file, async ({ params }) => {
+      await saveWorkspaceFile(options.url, options.token, workspaceRoot(options), params.path, params.content)
+      return {}
+    })
+    .onRequest(CLIENT_METHODS.terminal_create, ({ params }: { params: CreateTerminalRequest }): Promise<CreateTerminalResponse> =>
+      terminalRequest<CreateTerminalResponse>(options.url, options.token, {
+        action: 'create',
+        ...params,
+        ...(params.cwd === undefined && options.cwd !== undefined ? { cwd: options.cwd } : {}),
+      }),
+    )
+    .onRequest(CLIENT_METHODS.terminal_output, ({ params }: { params: TerminalOutputRequest }): Promise<TerminalOutputResponse> =>
+      terminalRequest<TerminalOutputResponse>(options.url, options.token, { action: 'output', ...params }),
+    )
+    .onRequest(CLIENT_METHODS.terminal_wait_for_exit, ({ params }: { params: WaitForTerminalExitRequest }): Promise<WaitForTerminalExitResponse> =>
+      terminalRequest<WaitForTerminalExitResponse>(options.url, options.token, { action: 'wait_for_exit', ...params }),
+    )
+    .onRequest(CLIENT_METHODS.terminal_kill, ({ params }: { params: KillTerminalRequest }): Promise<KillTerminalResponse> =>
+      terminalRequest<KillTerminalResponse>(options.url, options.token, { action: 'kill', ...params }),
+    )
+    .onRequest(CLIENT_METHODS.terminal_release, ({ params }: { params: ReleaseTerminalRequest }): Promise<ReleaseTerminalResponse> =>
+      terminalRequest<ReleaseTerminalResponse>(options.url, options.token, { action: 'release', ...params }),
+    )
+    .onRequest(CLIENT_METHODS.elicitation_create, async (_request: { params: CreateElicitationRequest }): Promise<CreateElicitationResponse> => {
+      // The server contract leaves elicitation UI for M6; cancelling is deterministic.
+      return { action: 'cancel' }
     })
 }
 
@@ -257,6 +343,8 @@ function initializeConnection(connection: ClientConnection): Promise<InitializeR
     protocolVersion: PROTOCOL_VERSION,
     clientCapabilities: {
       fs: { ...FS_CAPABILITIES },
+      ...TERMINAL_CAPABILITIES,
+      elicitation: { ...ELICITATION_CAPABILITIES },
       session: { ...SESSION_CAPABILITIES },
     },
     clientInfo: { name: 'openclaude-studio', version: '0.0.0' },
@@ -275,14 +363,46 @@ function subscribeStatus(
   }
 }
 
+// Studio has no separate MCP settings endpoint: resolve the configured/approved
+// servers once and share that value across every session setup path.
+function resolveMcpServers(servers: Array<McpServer> | undefined): Array<McpServer & McpServerStatus> {
+  return (servers ?? []).map(server => ({ ...server, status: 'approved' as const }))
+}
+
+function sessionMethods(connection: ClientConnection) {
+  return {
+    authenticate: (params: AuthenticateRequest, options?: SendRequestOptions) =>
+      connection.agent.request(AGENT_METHODS.authenticate, params, options) as Promise<AuthenticateResponse>,
+    listSessions: (params: ListSessionsRequest = {}, options?: SendRequestOptions) =>
+      connection.agent.request(AGENT_METHODS.session_list, params, options) as Promise<ListSessionsResponse>,
+    deleteSession: (params: DeleteSessionRequest, options?: SendRequestOptions) =>
+      connection.agent.request(AGENT_METHODS.session_delete, params, options) as Promise<DeleteSessionResponse>,
+    resumeSession: (params: ResumeSessionRequest, options?: SendRequestOptions) =>
+      connection.agent.request(AGENT_METHODS.session_resume, params, options) as Promise<ResumeSessionResponse>,
+    forkSession: (params: { sessionId: string }, options?: SendRequestOptions) =>
+      connection.agent.request<{ sessionId: string }>('session/fork', params, options),
+    closeSession: (params: CloseSessionRequest, options?: SendRequestOptions) =>
+      connection.agent.request(AGENT_METHODS.session_close, params, options) as Promise<CloseSessionResponse>,
+    setSessionMode: (params: SetSessionModeRequest, options?: SendRequestOptions) =>
+      connection.agent.request(AGENT_METHODS.session_set_mode, params, options) as Promise<SetSessionModeResponse>,
+    setConfigOption: (params: SetSessionConfigOptionRequest, options?: SendRequestOptions) =>
+      connection.agent.request(AGENT_METHODS.session_set_config_option, params, options) as Promise<SetSessionConfigOptionResponse>,
+  }
+}
+
 export async function connectHandshake(
-  options: Pick<AgentConnectionOptions, 'url' | 'token' | 'onUpdate' | 'onPermission' | 'onStatus'>,
+  options: Pick<
+    AgentConnectionOptions,
+    'url' | 'token' | 'onUpdate' | 'onPermission' | 'onStatus'
+  > & Pick<Partial<AgentConnectionOptions>, 'cwd' | 'mcpServers'>,
 ): Promise<AgentHandshake> {
   const stream = createWebSocketStream(bridgeSocketUrl(options.url, options.token))
   const handlers: ClientHandlers = { statusCallback: { current: null } }
   const app = registerHandlers(client({ name: 'openclaude-studio' }), options, handlers)
   const connection = app.connect(stream)
   const agentInfo = await initializeConnection(connection)
+  const mcpServers = resolveMcpServers(options.mcpServers)
+  const methods = sessionMethods(connection)
 
   return {
     connection,
@@ -291,7 +411,7 @@ export async function connectHandshake(
       const session = await connection.agent
         .buildSession({
           cwd,
-          mcpServers: [],
+          mcpServers: mcpServers.map(({ status: _status, error: _error, ...server }) => server),
           ...(permissionMode ? { _meta: { permissionMode } } : {}),
         })
         .start()
@@ -299,9 +419,14 @@ export async function connectHandshake(
       return sessionLike
     },
     fetchConfig: () => fetchConfig(connection),
-    fetchStatus: sessionId => fetchStatus(connection, sessionId),
+    fetchStatus: sessionId => fetchStatus(connection, sessionId).then(snapshot => ({
+      ...snapshot,
+      mcpServers: mcpServers.map(({ name, status, error }) => ({ name, status, ...(error ? { error } : {}) })),
+    })),
     patchConfig: patch => patchConfig(connection, patch),
     onStatus: callback => subscribeStatus(handlers, callback),
+    mcpServers,
+    ...methods,
     close: () => connection.close(),
   }
 }
@@ -358,6 +483,8 @@ export async function createAgentConnection(
   const app = registerHandlers(client({ name: 'openclaude-studio' }), options, handlers)
   const connection = app.connect(stream)
   const agentInfo = await initializeConnection(connection)
+  const mcpServers = resolveMcpServers(options.mcpServers)
+  const methods = sessionMethods(connection)
 
   // When a sessionId is supplied, resume the existing session via `session/load`
   // instead of creating a new one. The SDK exposes no public way to build an
@@ -367,7 +494,7 @@ export async function createAgentConnection(
     const sessionId = options.sessionId
     await connection.agent.request(AGENT_METHODS.session_load, {
       cwd: options.cwd,
-      mcpServers: [],
+      mcpServers: mcpServers.map(({ status: _status, error: _error, ...server }) => server),
       sessionId,
       ...(options.permissionMode ? { _meta: { permissionMode: options.permissionMode } } : {}),
     })
@@ -389,6 +516,8 @@ export async function createAgentConnection(
       sessionId,
       agentInfo,
       onStatus: callback => subscribeStatus(handlers, callback),
+      mcpServers,
+      ...methods,
       disconnect: () => connection.close(),
     }
   }
@@ -396,7 +525,7 @@ export async function createAgentConnection(
   const session = await connection.agent
     .buildSession({
       cwd: options.cwd,
-      mcpServers: [],
+      mcpServers: mcpServers.map(({ status: _status, error: _error, ...server }) => server),
       ...(options.permissionMode
         ? { _meta: { permissionMode: options.permissionMode } }
         : {}),
@@ -412,6 +541,8 @@ export async function createAgentConnection(
     sessionId: sessionLike.sessionId,
     agentInfo,
     onStatus: callback => subscribeStatus(handlers, callback),
+    mcpServers,
+    ...methods,
     disconnect: () => connection.close(),
   }
 }

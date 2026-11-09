@@ -251,5 +251,6 @@ Responsibility: render state. No protocol knowledge.
 - The shim is a workaround, not a fix. If upstream changes `queryAsync` to skip `init()` when
   the prompt is empty or aborted, the shim breaks silently. The integration test must assert
   that `session/new` succeeds against the real package, not just against a fake agent.
-- Whether the bridge should support multiple concurrent sessions per agent process is
-  deferred; one process per connection is the simplest correct baseline.
+- The bridge supports multiple concurrent sessions per agent process. One process can
+  serve one connection while owning a map of independently addressable sessions; this
+  is a settled decision (D3), not an open question.

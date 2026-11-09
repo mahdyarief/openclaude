@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { applySessionUpdate, emptySession } from '../src/updates.js'
+import { applySessionUpdate, emptySession, promptParts } from '../src/updates.js'
 import type { SessionNotification } from '@agentclientprotocol/sdk'
 
 const base = emptySession('s1', '/work')
@@ -29,6 +29,25 @@ describe('applySessionUpdate', () => {
     const firstMessage = second.messages[0]
     expect(firstMessage?.role).toBe('agent')
     expect(firstMessage?.parts).toEqual([{ kind: 'text', text: 'Hello world' }])
+  })
+
+  test('preserves replayed image and typed user content chunks', () => {
+    const image = { type: 'image' as const, data: 'AQID', mimeType: 'image/png' }
+    const replayed = applySessionUpdate(
+      base,
+      notification({ sessionUpdate: 'user_message_chunk', content: image }),
+    )
+    const withAnswer = applySessionUpdate(
+      replayed,
+      notification({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'seen' } }),
+    )
+
+    expect(replayed.messages[0]?.parts).toEqual([{ kind: 'content', block: image }])
+    expect(withAnswer.messages[1]?.parts).toEqual([{ kind: 'text', text: 'seen' }])
+    expect(promptParts([{ type: 'text', text: 'hello' }, image])).toEqual([
+      { kind: 'text', text: 'hello' },
+      { kind: 'content', block: image },
+    ])
   })
 
   test('keeps thought chunks separate from answer text', () => {

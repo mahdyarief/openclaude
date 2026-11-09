@@ -7,6 +7,7 @@
 
 import { randomUUID } from 'crypto'
 import { dirname } from 'path'
+import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import type { CallToolResult, ToolAnnotations } from '@modelcontextprotocol/sdk/types.js'
 import { QueryEngine } from '../../QueryEngine.js'
 import {
@@ -147,7 +148,7 @@ export interface SDKSession {
   /** Unique identifier for this session. */
   sessionId: string
   /** Send a message and yield responses as an AsyncIterable of SDKMessage. */
-  sendMessage(content: string): AsyncIterable<SDKMessage>
+  sendMessage(content: string | ContentBlockParam[]): AsyncIterable<SDKMessage>
   /** Return all messages accumulated so far in this session. */
   getMessages(): SDKMessage[]
   /** Return the session's live AppState snapshot (permission mode, tasks, etc.).
@@ -161,6 +162,8 @@ export interface SDKSession {
   subscribeAppState(listener: () => void): () => void
   /** Abort the current in-flight query. */
   interrupt(): void
+  /** Apply a new permission mode and refresh the session's tools. */
+  setPermissionMode(mode: QueryPermissionMode): Promise<void>
   /** Close the session and release resources. Resolves after MCP child
    * processes have been disconnected. */
   close(): Promise<void>
@@ -223,6 +226,7 @@ class SDKSessionImpl implements SDKSession {
   private agentsLoaded = false
   private mcpServers?: Record<string, unknown>
   private mcpConnected = false
+  private sdkMcpTools: Parameters<typeof assembleToolPool>[1] = []
   private pendingPermissionPrompts = new Map<string, {
     resolve: (decision: PermissionResolveDecision) => void
   }>()
@@ -270,13 +274,16 @@ class SDKSessionImpl implements SDKSession {
     return this._sessionId
   }
 
-  async *sendMessage(content: string): AsyncIterable<SDKMessage> {
+  async *sendMessage(content: string | ContentBlockParam[]): AsyncIterable<SDKMessage> {
     const sdkContext = {
       sessionId: this._sessionId as SessionId,
       sessionProjectDir: this._sessionProjectDir,
       cwd: this.options.cwd,
       originalCwd: this.options.cwd,
     }
+    const prompt = typeof content === 'string'
+      ? [{ type: 'text' as const, text: content }]
+      : content
 
     const self = this
     const inner = bindSdkContextToAsyncGenerator(
@@ -357,6 +364,7 @@ class SDKSessionImpl implements SDKSession {
         if (!self.mcpConnected && self.mcpServers && Object.keys(self.mcpServers).length > 0) {
           try {
             const { clients: mcpClients, tools: mcpTools } = await connectSdkMcpServers(self.mcpServers)
+            self.sdkMcpTools = mcpTools
             if (mcpClients.length > 0) {
               self.engine.setMcpClients(mcpClients)
             }
@@ -377,7 +385,7 @@ class SDKSessionImpl implements SDKSession {
         try {
           if (self._abortController?.signal.aborted) return
           yield* self.drainAgentFailureQueue()
-          for await (const engineMsg of self.engine.submitMessage(content)) {
+          for await (const engineMsg of self.engine.submitMessage(prompt)) {
             if (self._abortController?.signal.aborted) break
             yield engineMsg
             yield* self.drainTimeoutQueue()
@@ -410,6 +418,23 @@ class SDKSessionImpl implements SDKSession {
 
   interrupt(): void {
     this.interruptWithSource('sdk_interrupt')
+  }
+
+  async setPermissionMode(mode: QueryPermissionMode): Promise<void> {
+    const current = this.appStateStore.getState().toolPermissionContext
+    const newPermissionContext = buildPermissionContext({
+      cwd: this.options.cwd,
+      permissionMode: mode,
+      additionalDirectories: Array.from(current.additionalWorkingDirectories.keys()),
+      allowDangerouslySkipPermissions:
+        current.isBypassPermissionsModeAvailable || this.options.allowDangerouslySkipPermissions,
+      disallowedTools: this.options.disallowedTools,
+    })
+    this.appStateStore.setState(prev => ({
+      ...prev,
+      toolPermissionContext: newPermissionContext,
+    }))
+    this.engine.updateTools(assembleToolPool(newPermissionContext, this.sdkMcpTools))
   }
 
   private interruptWithSource(source: string): void {

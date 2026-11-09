@@ -1,6 +1,52 @@
 import { describe, expect, test } from 'vitest'
 import { sessionMode, mayEnterIdle } from '../src/use-agent-session.js'
 import { buildPermissionOutcome } from '../src/permissions-outcome.js'
+import { fileToContentBlock } from '../src/Workbench.js'
+import { promptParts } from '@openclaude-studio/acp'
+import { renderToStaticMarkup } from 'react-dom/server'
+import React from 'react'
+import { PromptBar } from '@openclaude-studio/ui'
+
+class FakeFile {
+  constructor(
+    readonly name: string,
+    readonly type: string,
+    private readonly contents: Uint8Array,
+  ) {}
+  get size() { return this.contents.length }
+  async arrayBuffer() { return this.contents.buffer.slice(0) }
+}
+
+describe('attachment ContentBlocks', () => {
+  test('images use base64 ACP image blocks', async () => {
+    const file = new FakeFile('shot.png', 'image/png', new Uint8Array([1, 2, 3])) as unknown as File
+    expect(await fileToContentBlock(file)).toEqual({
+      type: 'image', data: 'AQID', mimeType: 'image/png',
+    })
+  })
+
+  test('text files use embedded ACP resource blocks', async () => {
+    const file = new FakeFile('notes.txt', 'text/plain', new TextEncoder().encode('hello')) as unknown as File
+    const block = await fileToContentBlock(file)
+    expect(block.type).toBe('resource')
+    expect(promptParts([block])).toEqual([{ kind: 'content', block }])
+  })
+
+  test('PromptBar enables and labels its attachment control', () => {
+    const html = renderToStaticMarkup(
+      React.createElement(PromptBar, {
+        value: '',
+        onChange: () => {},
+        onSend: () => {},
+        onCancel: () => {},
+        onAttach: () => {},
+        labels: { placeholder: 'Ask', attach: '2 attached' },
+      }),
+    )
+    expect(html).toContain('aria-label="2 attached"')
+    expect(html).not.toMatch(/<button[^>]*aria-label="2 attached"[^>]* disabled=""/)
+  })
+})
 
 describe('sessionMode', () => {
   test('loads when a session id is present', () => {

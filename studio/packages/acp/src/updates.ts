@@ -1,4 +1,5 @@
 import type {
+  ContentBlock,
   SessionNotification,
   SessionUpdate,
   ToolCall,
@@ -48,6 +49,22 @@ type TextPart = Extract<MessagePart, { kind: 'text' | 'thought' }>
 
 function isTextual(part: MessagePart): part is TextPart {
   return part.kind === 'text' || part.kind === 'thought'
+}
+
+/** Keep non-text ACP content blocks in local/replayed messages instead of dropping them. */
+export function promptParts(prompt: string | ContentBlock[] | ContentBlock): MessagePart[] {
+  const blocks = typeof prompt === 'string' ? [{ type: 'text', text: prompt }] : Array.isArray(prompt) ? prompt : [prompt]
+  return blocks.map((block): MessagePart =>
+    block.type === 'text'
+      ? { kind: 'text', text: block.text }
+      : { kind: 'content', block: block as ContentBlock },
+  )
+}
+
+/** Convert a replayed ACP content chunk into a display part. */
+export function chunkPart(content: ContentBlock, thought = false): MessagePart {
+  if (content.type === 'text') return { kind: thought ? 'thought' : 'text', text: content.text }
+  return { kind: 'content', block: content }
 }
 
 // A chunk belongs to the last message of the same role. If the last message has
@@ -130,39 +147,27 @@ function assertNever(value: never): never {
 function applyUpdate(state: SessionState, update: SessionUpdate): SessionState {
   switch (update.sessionUpdate) {
     case 'user_message_chunk': {
-      if (update.content.type !== 'text') return state
       // The composer already inserted this prompt optimistically, so an echo
       // from the agent would duplicate it. `optimistic-` marks that bubble.
       const last = state.messages[state.messages.length - 1]
       if (last?.role === 'user' && last.id.startsWith('optimistic-')) return state
       return {
         ...state,
-        messages: appendChunk(state.messages, 'user', {
-          kind: 'text',
-          text: update.content.text,
-        }),
+        messages: appendChunk(state.messages, 'user', chunkPart(update.content)),
       }
     }
     case 'agent_message_chunk': {
-      if (update.content.type !== 'text') return state
       return {
         ...state,
         streaming: true,
-        messages: appendChunk(state.messages, 'agent', {
-          kind: 'text',
-          text: update.content.text,
-        }),
+        messages: appendChunk(state.messages, 'agent', chunkPart(update.content)),
       }
     }
     case 'agent_thought_chunk': {
-      if (update.content.type !== 'text') return state
       return {
         ...state,
         streaming: true,
-        messages: appendChunk(state.messages, 'agent', {
-          kind: 'thought',
-          text: update.content.text,
-        }),
+        messages: appendChunk(state.messages, 'agent', chunkPart(update.content, true)),
       }
     }
     case 'tool_call': {

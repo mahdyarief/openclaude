@@ -200,6 +200,31 @@ export function MessageBubble({
             return
           }
 
+          if (part.kind === 'content') {
+            flushChips()
+            const block = part.block
+            if (block.type === 'image') {
+              rendered.push(
+                <div key={index} className="max-w-full overflow-hidden rounded-[var(--radius-chip)] border border-line">
+                  <img
+                    src={`data:${block.mimeType};base64,${block.data}`}
+                    alt="Attached image"
+                    className="max-h-80 max-w-full object-contain"
+                  />
+                </div>,
+              )
+            } else {
+              const label = 'uri' in block && typeof block.uri === 'string' ? block.uri : block.type
+              rendered.push(
+                <div key={index} className="max-w-full">
+                  <Badge variant="default">Attachment</Badge>
+                  <span className="ml-2 text-xs text-ink-2">{label}</span>
+                </div>,
+              )
+            }
+            return
+          }
+
           const tc = part.toolCallId ? toolCalls[part.toolCallId] : undefined
           const title = tc?.title ?? part.toolCallId
           const status = tc?.status ?? (part.toolCallId ? 'pending' : undefined)

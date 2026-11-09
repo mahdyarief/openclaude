@@ -255,3 +255,20 @@ export async function saveWorkspaceFile(
   }
   return (await res.json()) as FsFile
 }
+
+/** Forwards one ACP terminal client request to the bridge-owned process table. */
+export async function terminalRequest<T>(
+  baseUrl: string,
+  token: string,
+  payload: Record<string, unknown>,
+): Promise<T> {
+  const query = new URLSearchParams({ token })
+  const res = await fetch(`${httpOrigin(baseUrl)}/terminal?${query.toString()}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  const body = (await res.json().catch(() => undefined)) as (T & { error?: string }) | undefined
+  if (!res.ok) throw new Error(body?.error ?? `terminal request failed: ${res.status}`)
+  return body as T
+}

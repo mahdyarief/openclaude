@@ -50,6 +50,111 @@ function readBody(req: IncomingMessage): Promise<string> {
   })
 }
 
+type BridgeTerminal = {
+  child: ChildProcess
+  output: string
+  truncated: boolean
+  exitStatus: { exitCode: number | null; signal: string | null } | null
+  waiters: Array<(status: { exitCode: number | null; signal: string | null }) => void>
+  byteLimit: number
+}
+
+function terminalFinish(
+  state: BridgeTerminal,
+  exitCode: number | null,
+  signal: string | null,
+): void {
+  if (state.exitStatus) return
+  state.exitStatus = { exitCode, signal }
+  for (const resolve of state.waiters.splice(0)) resolve(state.exitStatus)
+}
+
+function bridgeTerminal(terminals: Map<string, BridgeTerminal>, id: string): BridgeTerminal {
+  const state = terminals.get(id)
+  if (!state) throw new Error(`unknown terminal: ${id}`)
+  return state
+}
+
+async function handleTerminalRequest(
+  body: Record<string, unknown>,
+  defaultCwd: string,
+  terminals: Map<string, BridgeTerminal>,
+): Promise<unknown> {
+  const id = typeof body.terminalId === 'string' ? body.terminalId : ''
+  switch (body.action) {
+    case 'create': {
+      if (typeof body.command !== 'string') throw new Error('command is required')
+      const terminalId = randomBytes(16).toString('hex')
+      const env = Array.isArray(body.env)
+        ? Object.fromEntries(body.env.flatMap(variable => {
+            if (!variable || typeof variable !== 'object') return []
+            const item = variable as Record<string, unknown>
+            return typeof item.name === 'string' && typeof item.value === 'string'
+              ? [[item.name, item.value]]
+              : []
+          }))
+        : {}
+      const byteLimit = typeof body.outputByteLimit === 'number' ? body.outputByteLimit : 1024 * 1024
+      const child = spawn(body.command, Array.isArray(body.args) ? body.args.map(String) : [], {
+        cwd: typeof body.cwd === 'string' ? body.cwd : defaultCwd,
+        env: { ...process.env, ...env },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      const state: BridgeTerminal = {
+        child,
+        output: '',
+        truncated: false,
+        exitStatus: null,
+        waiters: [],
+        byteLimit,
+      }
+      const append = (chunk: Buffer | string) => {
+        state.output += chunk.toString()
+        if (Buffer.byteLength(state.output) > byteLimit) {
+          state.output = Buffer.from(state.output).subarray(-byteLimit).toString('utf8')
+          state.truncated = true
+        }
+      }
+      child.stdout?.on('data', append)
+      child.stderr?.on('data', append)
+      child.on('error', error => {
+        append(String(error))
+        terminalFinish(state, null, 'error')
+      })
+      child.on('close', (code, signal) => terminalFinish(state, code, signal))
+      terminals.set(terminalId, state)
+      return { terminalId }
+    }
+    case 'output': {
+      const state = bridgeTerminal(terminals, id)
+      return {
+        output: state.output,
+        truncated: state.truncated,
+        ...(state.exitStatus ? { exitStatus: state.exitStatus } : {}),
+      }
+    }
+    case 'wait_for_exit': {
+      const state = bridgeTerminal(terminals, id)
+      if (state.exitStatus) return state.exitStatus
+      return new Promise(resolve => state.waiters.push(resolve))
+    }
+    case 'kill': {
+      const state = bridgeTerminal(terminals, id)
+      state.child.kill()
+      return {}
+    }
+    case 'release': {
+      const state = bridgeTerminal(terminals, id)
+      state.child.kill()
+      terminalFinish(state, state.exitStatus?.exitCode ?? null, state.exitStatus?.signal ?? 'SIGTERM')
+      terminals.delete(id)
+      return {}
+    }
+    default:
+      throw new Error('unknown terminal action')
+  }
+}
+
 export async function startBridge(options: BridgeOptions = {}): Promise<{
   url: string
   token: string
@@ -65,6 +170,7 @@ export async function startBridge(options: BridgeOptions = {}): Promise<{
     args: [defaultShim],
   }
   const children = new Set<ChildProcess>()
+  const bridgeTerminals = new Map<string, BridgeTerminal>()
 
   // Resource sampler for the status footer. Cumulative CPU counters are
   // converted to a percentage between polls, so the web client just reads it.
@@ -322,6 +428,35 @@ export async function startBridge(options: BridgeOptions = {}): Promise<{
       return
     }
 
+    if (url.pathname === '/terminal') {
+      const cors = corsHeaders(req)
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204, cors)
+        res.end()
+        return
+      }
+      const presented = url.searchParams.get('token')
+      const header = req.headers.authorization
+      if (!tokenless && presented !== token && header !== `Bearer ${token}`) {
+        res.writeHead(401, cors)
+        res.end()
+        return
+      }
+      try {
+        const result = await handleTerminalRequest(
+          JSON.parse(await readBody(req)) as Record<string, unknown>,
+          options.cwd ?? process.cwd(),
+          bridgeTerminals,
+        )
+        res.writeHead(200, { 'content-type': 'application/json', ...cors })
+        res.end(JSON.stringify(result))
+      } catch (error) {
+        res.writeHead(400, { 'content-type': 'application/json', ...cors })
+        res.end(JSON.stringify({ error: error instanceof Error ? error.message : 'terminal request failed' }))
+      }
+      return
+    }
+
     if (url.pathname === '/browse' || url.pathname === '/roots') {
       const cors = corsHeaders(req)
       const presented = url.searchParams.get('token')
@@ -458,6 +593,8 @@ export async function startBridge(options: BridgeOptions = {}): Promise<{
     url: `ws://${host}:${address.port}`,
     token,
     close: async () => {
+      for (const state of bridgeTerminals.values()) state.child.kill()
+      bridgeTerminals.clear()
       clearInterval(heartbeat)
       for (const subscriber of stateSubscribers) subscriber.destroy()
       stateSubscribers.clear()

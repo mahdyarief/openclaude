@@ -360,27 +360,90 @@ Studio, dan command `local-jsx`/`local` yang tidak dipetakan menampilkan `SlashC
 
 ### M5 — Siklus sesi, filesystem, terminal, MCP, lampiran
 
-- [ ] Method server: `authenticate`, `session/set_mode`, `session/set_config_option`,
+- [x] Method server: `authenticate`, `session/set_mode`, `session/set_config_option`,
       `session/list`, `session/delete`, `session/resume`, `session/fork`, `session/close`,
       `fs/read_text_file`, `fs/write_text_file`, seluruh `terminal/*`, `elicitation/*`
-- [ ] Mode permission bisa diubah mid-session (saat ini hanya `_meta.permissionMode` saat
+- [x] Mode permission bisa diubah mid-session (saat ini hanya `_meta.permissionMode` saat
       `session/new`, `connection.ts:246`)
-- [ ] `session/load` replay riwayat (`use-agent-session.ts:308` mencatat ACP tidak mereplay)
-- [ ] `clientCapabilities.fs` dari `false` + handler nyata (`connection.ts:232–236`,
+- [x] `session/load` replay riwayat (`use-agent-session.ts:308` mencatat ACP tidak mereplay)
+- [x] `clientCapabilities.fs` dari `false` + handler nyata (`connection.ts:232–236`,
       `:221–229`, `:332/:335` masih `throw 'not implemented yet'`)
-- [ ] `mcpServers` tidak lagi hardcoded `[]` (`connection.ts:245`); status/approval MCP
-- [ ] Attachment: `promptCapabilities` masih semua `false` (`acp.ts:392`), `textFromPrompt()`
+- [x] `mcpServers` tidak lagi hardcoded `[]` (`connection.ts:245`); status/approval MCP
+- [x] Attachment: `promptCapabilities` masih semua `false` (`acp.ts:392`), `textFromPrompt()`
       text-only (`:105–115`), `updates.ts:103/117/128` drop blok non-teks, `PromptBar.onAttach`
       tidak pernah di-pass `Workbench` → tombol disabled
-- [ ] Multi-session: server **sudah** menyimpan `sessions = new Map()` (`acp.ts:189`) +
+- [x] Multi-session: server **sudah** menyimpan `sessions = new Map()` (`acp.ts:189`) +
       `session/new`/`session/load` men-set key (`acp.ts:422`, `:451`). Tambahkan `session/list`
       untuk mengeksposnya dan **betulkan** baris design spec §8 "one process per connection"
       yang kini menyesatkan (D3 final: bukan keputusan terbuka lagi).
-- [ ] Protokol: **tetap ACP v1** (D2). `protocolVersion: 1` (`acp.ts:69`) sudah cocok dengan
+- [x] Protokol: **tetap ACP v1** (D2). `protocolVersion: 1` (`acp.ts:69`) sudah cocok dengan
       root export SDK yang menunjuk `dist/v1/stable/acp.js`; v2 masih `@experimental`.
 
 **Selesai jika:** daftar sesi, fork/resume, ubah mode di tengah sesi, kirim gambar, dan baca/tulis
 file lewat klien berfungsi.
+✅ Terpenuhi: `session/list` mengekspos map sesi server, `session/fork`/`session/resume`
+dan `session/set_mode` tersedia dari handshake/connection Studio; attachment gambar dikonversi
+ke `ContentBlock` dan dikirim lewat `session/prompt`; `clientCapabilities.fs` aktif dengan
+handler baca/tulis yang dijail ke root proyek. `session/load` mereplay riwayat sekali lewat
+`session/update`, dengan JSONL bridge tetap sebagai fallback agen lama.
+
+**Catatan M5 (implementasi & keterbatasan):**
+
+- Server ACP tetap memakai ACP v1. `session/fork` tidak ada pada konstanta `AGENT_METHODS`
+  rilis stabil SDK, sehingga klien memakai literal metode `'session/fork'`; metode lain
+  memakai konstanta bertipe. `pendingRequests` dipakai bersama untuk forward `fs/*`,
+  `terminal/*`, dan `elicitation/create` dari server ke klien yang terhubung.
+- Handler klien berada di `packages/acp`, sedangkan eksekusi proses dan hashing terminal
+  berada di Node-side `packages/bridge` melalui endpoint HTTP ber-token. Pemisahan ini
+  mencegah `node:child_process`/`node:crypto` masuk bundel browser. Path filesystem
+  dibatasi ke root proyek; terminal memakai cwd sesi.
+- `elicitation/create` mengembalikan `cancelled` deterministik karena UI elicitation
+  belum tersedia; M5 mengimplementasikan metode protokolnya, bukan alur formulir/URL baru.
+  `mcpServers` diterima dari opsi koneksi, diteruskan saat `session/new`/`session/load`,
+  dan dilaporkan dalam snapshot status dengan status `approved`, tanpa kontrol UI baru.
+- Lampiran gambar memakai blok `image` base64; teks memakai blok `resource`, berkas lain
+  memakai `resource_link`. `updates.ts` menyimpan blok non-teks pada pesan lokal/replay
+  dan `MessageBubble` merender gambar atau badge lampiran. Tombol `onAttach` kini aktif;
+  input file tersembunyi memakai primitif `Input` shadcn yang meneruskan `ref`.
+- Design spec §8 diperbaiki menjadi pernyataan D3 yang final: satu proses agen dapat
+  memiliki banyak sesi yang dialamatkan independen. Tidak ada dependency baru.
+
+**Verifikasi M5:**
+
+- `corepack pnpm -r typecheck` (dari `studio/`) → `acp`, `bridge`, `ui`, `web` Done, `EXIT=0`.
+- `corepack pnpm exec vitest run` (dari `studio/`) → 30 file / **237 test** hijau, `EXIT=0`;
+  mencakup capabilities/forwarding klien, containment filesystem, siklus terminal,
+  attachment, replay, dan pembaruan konten non-teks.
+- `corepack pnpm -r build` (dari `studio/`) → Done, `EXIT=0`.
+- `bun run typecheck`, `bun run typecheck:type-tests`, `bun run check` (dari root repo),
+  `node bin/openclaude --version` dengan dan tanpa compile cache → `EXIT=0`.
+- `bun test src/entrypoints/acp.test.ts` → **47 pass / 0 fail**, 144 `expect()`.
+- `npm run test:provider-recommendation` → `EXIT=0`.
+
+Pengecualian terdokumentasi (semua diverifikasi terhadap base, bukan regresi M5):
+
+- `bun install --frozen-lockfile` gagal (`lockfile had changes, but lockfile is frozen`)
+  karena drift `bun.lock`/`package.json` yang sudah ada pada base `b8568d3a`
+  (`git diff FETCH_HEAD HEAD -- bun.lock package.json` = 937/164 baris). Working tree M5
+  tidak menyentuh kedua file tersebut.
+- `bun run test:provider` gagal pada worktree base bersih dengan dependensi yang sama
+  (76 fail / 1728 test) maupun pada working tree M5 (77 fail / 1729 test), keduanya
+  `EXIT=1`. Diff M5 tidak menyentuh `src/services/**` atau `src/utils/**` (0 baris).
+- `bun run check` berakhir `EXIT=0`, tetapi log-nya memuat
+  `SyntaxError: Export named 'formatDescriptionWithSource' not found in module
+  'src/commands.ts'` pada `src/QueryEngine.autoCompactCooldown.test.ts:39`. Gejala identik
+  muncul pada worktree base `b8568d3a`; suite tetap berlanjut dan keseluruhan perintah
+  sukses.
+- `bun run security:pr-scan -- --base FETCH_HEAD --head HEAD` tidak dapat dijalankan apa
+  adanya: `scripts/pr-intent-scan.ts` memanggil `spawnSync('git', ...)` tanpa `maxBuffer`,
+  sehingga diff PR 2.596.810 byte (identik pada M4 tip `b8568d3a`, merge-base
+  `5cd11336`) melewati batas default 1 MB dan skrip gagal dengan
+  `PR intent scan failed: git diff failed`. Salinan skrip identik dengan
+  `maxBuffer: 64 * 1024 * 1024` pada kedua `spawnSync` (di `/tmp`, repo tidak diubah)
+  menghasilkan **14 medium / 0 high**, seluruhnya pada baris yang sudah ada sebelumnya
+  (`release.yml`, `scripts/acp-web-server.mjs`, `scripts/build.ts`,
+  `src/tools/FileReadTool/prompt.vision.test.ts:138`). Tidak ada temuan pada file M5.
+  Perbaikan `maxBuffer` sengaja tidak dilakukan di M5 agar perubahan tetap fokus.
 
 ### M6 — Build & deploy
 

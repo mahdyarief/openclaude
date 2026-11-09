@@ -16,6 +16,7 @@ export type MessagePart =
   | { kind: 'text'; text: string }
   | { kind: 'thought'; text: string }
   | { kind: 'tool'; toolCallId: string }
+  | { kind: 'content'; block: ContentBlock }
 
 export type ConversationMessage = {
   id: string

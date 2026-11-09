@@ -6,6 +6,7 @@ import {
   ConfigDialog,
   DocumentViewer,
   FileExplorer,
+  Input,
   LoadingState,
   PermissionPreviewPanel,
   PromptBar,
@@ -25,6 +26,7 @@ import {
   isPermissionMode,
   type AgentStatusSnapshot,
   type ConnectionStatus,
+  type ContentBlock,
   type PermissionMode,
   type SessionSummary,
 } from '@openclaude-studio/acp'
@@ -45,6 +47,27 @@ const PERMISSION_MODE_OPTIONS = PERMISSION_MODES.map(mode => ({
   id: mode,
   label: PERMISSION_MODE_LABELS[mode],
 }))
+
+/** Convert a browser File to an ACP v1 ContentBlock supported by the agent. */
+export async function fileToContentBlock(file: File): Promise<ContentBlock> {
+  const bytes = new Uint8Array(await file.arrayBuffer())
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  const data = btoa(binary)
+  const mimeType = file.type || 'application/octet-stream'
+  if (mimeType.startsWith('image/')) return { type: 'image', data, mimeType }
+  const uri = `file://${encodeURIComponent(file.name)}`
+  if (mimeType.startsWith('text/') || mimeType === 'application/json') {
+    return { type: 'resource', resource: { uri, mimeType, text: new TextDecoder().decode(bytes) } }
+  }
+  return {
+    type: 'resource_link',
+    uri,
+    name: file.name,
+    mimeType,
+    size: file.size,
+  }
+}
 
 export function Workbench({
   config,
@@ -81,6 +104,10 @@ export function Workbench({
   // Per-pane connection status, keyed by tab id, so the tab strip can show a
   // status dot and the pane can label its own state.
   const [statusByTab, setStatusByTab] = useState<Record<string, ConnectionStatus>>({})
+  const [remoteSessionList, setRemoteSessionList] = useState<Array<{ sessionId: string; cwd: string }>>([])
+  const handleRemoteSessions = useCallback((list: Array<{ sessionId: string; cwd: string }>) => {
+    setRemoteSessionList(list)
+  }, [])
   const { sessions, loading: sessionsLoading, error: sessionsError, refresh } = useProjectSessions(
     config.url,
     config.token,
@@ -216,9 +243,21 @@ export function Workbench({
 
   const workspaces = workspaceProjects.map(project => {
     const entry = byPath[project.path]
+    const indexed = entry?.sessions ?? []
+    const indexedIds = new Set(indexed.map(session => session.id))
+    // `session/list` is the live per-process session map. Merge any sessions
+    // not yet in the persisted index into the existing rail list seam.
+    const live = remoteSessionList
+      .filter(session => session.cwd === project.path && !indexedIds.has(session.sessionId))
+      .map(session => ({
+        id: session.sessionId,
+        title: session.sessionId,
+        updatedAt: 0,
+        messageCount: 0,
+      }))
     return {
       ...project,
-      sessions: groupSessions(entry?.sessions ?? [], activeId),
+      sessions: groupSessions([...indexed, ...live], activeId),
       openIds,
       loading: entry?.loading ?? true,
       error: entry?.error ?? null,
@@ -312,6 +351,7 @@ export function Workbench({
                   }
                   onSessionCreated={realId => handleSessionCreated(tab.tabId, realId, tab.cwd)}
                   onConnectionFailed={onConnectionFailed}
+                  onRemoteSessions={handleRemoteSessions}
                   workspaceSessions={byPath[tab.cwd] ?? { sessions: [], loading: true, error: null }}
                   onOpenSession={session => {
                     openTab({
@@ -353,6 +393,7 @@ function SessionPane({
   onPermissionModeChange,
   onSessionCreated,
   onConnectionFailed,
+  onRemoteSessions,
   workspaceSessions,
   onOpenSession,
 }: {
@@ -369,6 +410,8 @@ function SessionPane({
   onPermissionModeChange: (mode: PermissionMode) => void
   onSessionCreated: (realId: string) => void
   onConnectionFailed?: (() => void) | undefined
+  /** publish `session/list` entries to the workspace rail */
+  onRemoteSessions: (sessions: Array<{ sessionId: string; cwd: string }>) => void
   /** saved sessions for this workspace, for `/sessions` and `/resume` */
   workspaceSessions: WorkspaceSessions
   /** open a saved session in a tab */
@@ -398,6 +441,9 @@ function SessionPane({
     setConfig,
     getStatus,
     onStatus,
+    sessions,
+    remoteSessionList,
+    refreshSessionList,
   } = useAgentSession({
     url: config.url,
     token: config.token,
@@ -414,6 +460,15 @@ function SessionPane({
   const [panel, setPanel] = useState<StudioPanelKind>('status')
   const [panelOpen, setPanelOpen] = useState(false)
   const [commandNotice, setCommandNotice] = useState<{ title: string; description: string } | null>(null)
+  const [attachments, setAttachments] = useState<ContentBlock[]>([])
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+
+  useEffect(() => {
+    void refreshSessionList()
+  }, [refreshSessionList, status])
+  useEffect(() => {
+    onRemoteSessions(remoteSessionList)
+  }, [remoteSessionList, onRemoteSessions])
 
   useEffect(() => {
     // A failed stored connection falls back to the connect screen automatically.
@@ -481,16 +536,27 @@ function SessionPane({
 
   async function submit() {
     const text = draft.trim()
-    if (!text || disabled) return
+    if ((!text && attachments.length === 0) || disabled) return
     setDraft('')
-    if (handleSlashCommand(text)) return
+    if (text && handleSlashCommand(text)) return
     // Never create a session on mount; only the first prompt may.
     if (!sessionId) {
       const id = await ensureSession()
       if (id) onSessionCreated(id)
     }
-    sendPrompt(text)
+    const blocks: ContentBlock[] = [
+      ...(text ? [{ type: 'text', text } as ContentBlock] : []),
+      ...attachments,
+    ]
+    sendPrompt(blocks)
+    setAttachments([])
+    if (fileInputRef.current) fileInputRef.current.value = ''
   }
+
+  const attachFiles = useCallback(async (files: File[]) => {
+    const blocks = await Promise.all(files.map(file => fileToContentBlock(file)))
+    setAttachments(previous => [...previous, ...blocks])
+  }, [])
 
   if (status === 'connecting') {
     return (
@@ -611,13 +677,25 @@ function SessionPane({
         mode={permissionMode}
         onModeChange={id => {
           if (isPermissionMode(id)) onPermissionModeChange(id)
+          if (sessionId) void sessions?.setSessionMode({ sessionId, modeId: id })
         }}
-        labels={{ placeholder: disabled ? 'Connecting…' : 'Ask OpenClaude…' }}
         commands={state.commands}
         onCommandPick={name => {
           // A menu pick carries the bare name; route it through the same
           // decision as typed input so both paths stay in sync.
           if (handleSlashCommand(`/${name}`)) return
+        }}
+        onAttach={() => fileInputRef.current?.click()}
+        labels={{ placeholder: disabled ? 'Connecting…' : 'Ask OpenClaude…', attach: attachments.length ? `${attachments.length} attached` : 'Attach' }}
+      />
+      <Input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        className="sr-only"
+        aria-label="Attach files"
+        onChange={event => {
+          void attachFiles(Array.from(event.target.files ?? []))
         }}
       />
       <SessionStatusBar status={statusSnapshot} />

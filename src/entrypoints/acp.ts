@@ -1,10 +1,15 @@
+import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import { createInterface } from 'node:readline'
 import {
   unstable_v2_createSession,
   unstable_v2_resumeSession,
   type SDKSession,
 } from './sdk/v2.js'
-import type { SDKPermissionRequestMessage, SDKMessage } from './sdk/shared.js'
+import type {
+  QueryPermissionMode,
+  SDKPermissionRequestMessage,
+  SDKMessage,
+} from './sdk/shared.js'
 import type { PermissionResult } from './sdk/coreTypes.generated.js'
 import { runOutsideSdkContext } from '../bootstrap/state.js'
 import { init } from './init.js'
@@ -81,6 +86,7 @@ type JsonRpcRequest = {
   params?: Record<string, unknown>
   /** present on client responses to our requests (e.g. permission prompts) */
   result?: unknown
+  error?: { code: number; message: string; data?: unknown }
 }
 type JsonRpcResponse = {
   jsonrpc: '2.0'
@@ -264,6 +270,7 @@ export type AcpSessionUpdate =
 
 type SessionState = {
   cwd: string
+  mode: string
   session: SDKSession
   active: Promise<void> | null
   statusUnsubscribe?: () => void
@@ -273,16 +280,64 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object'
 }
 
-function textFromPrompt(params: Record<string, unknown>): string {
+export async function contentBlocksFromPrompt(
+  params: Record<string, unknown>,
+  readClientFile: (params: unknown) => Promise<unknown> = async () => undefined,
+): Promise<ContentBlockParam[]> {
   const prompt = params.prompt
-  if (typeof prompt === 'string') return prompt
+  if (typeof prompt === 'string') return [{ type: 'text', text: prompt }]
   if (!Array.isArray(prompt)) throw new Error('session/prompt requires a prompt')
 
-  return prompt
-    .filter(isRecord)
-    .filter(block => block.type === 'text' && typeof block.text === 'string')
-    .map(block => block.text as string)
-    .join('')
+  const blocks: ContentBlockParam[] = []
+  const appendText = (text: unknown): void => {
+    if (typeof text === 'string' && text !== '') blocks.push({ type: 'text', text })
+  }
+  const appendResourceText = async (resource: unknown): Promise<void> => {
+    const record = isRecord(resource) ? resource : {}
+    appendText(record.text ?? record.content)
+    const path = typeof record.uri === 'string'
+      ? record.uri
+      : typeof record.path === 'string'
+        ? record.path
+        : null
+    if (!path) return
+    const result = await readClientFile({
+      path,
+      ...(typeof params.sessionId === 'string' ? { sessionId: params.sessionId } : {}),
+    })
+    if (isRecord(result)) appendText(result.content ?? result.text)
+  }
+
+  for (const value of prompt) {
+    if (!isRecord(value)) continue
+    switch (value.type) {
+      case 'text':
+        appendText(value.text)
+        break
+      case 'image':
+        if (typeof value.data === 'string' && typeof value.mimeType === 'string') {
+          blocks.push({
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: value.mimeType as Extract<ContentBlockParam, { type: 'image' }>['source'] extends { media_type: infer M } ? M : never,
+              data: value.data,
+            },
+          })
+        }
+        break
+      case 'resource':
+        await appendResourceText(value.resource)
+        break
+      case 'resource_link':
+        await appendResourceText(value)
+        break
+      case 'embedded_context':
+        await appendResourceText(value)
+        break
+    }
+  }
+  return blocks
 }
 
 function textFromMessage(message: SDKMessage): string | null {
@@ -801,6 +856,10 @@ export function createAcpServer(
   let initialized = false
   let supportsCompaction = false
   let supportsNotices = false
+  let supportsClientFsRead = false
+  let supportsClientFsWrite = false
+  let supportsClientTerminal = false
+  let supportsClientElicitation = false
 
   const write: AcpWriter = message => {
     output.write(`${JSON.stringify(message)}\n`)
@@ -963,6 +1022,15 @@ export function createAcpServer(
     emit()
   }
 
+  const callClient = (method: string, params: unknown): Promise<unknown> => {
+    const id = nextRequestId++
+    const promise = new Promise<unknown>(resolve => {
+      pendingRequests.set(id, resolve)
+    })
+    write({ jsonrpc: '2.0', id, method, params })
+    return promise
+  }
+
   const requestPermission = (
     sessionId: string,
     session: SDKSession,
@@ -1021,20 +1089,92 @@ export function createAcpServer(
 
   type AcpHandler = (message: JsonRpcRequest) => Promise<void> | void
 
+  const replayHistory = (sessionId: string, session: SDKSession): void => {
+    const appendText = (sessionUpdate: 'user_message_chunk' | 'agent_message_chunk' | 'agent_thought_chunk', text: unknown): void => {
+      if (typeof text !== 'string' || text === '') return
+      emitUpdate(sessionId, { sessionUpdate, content: { type: 'text', text } })
+    }
+    for (const message of session.getMessages()) {
+      appendText('user_message_chunk', userTextFromMessage(message))
+      appendText('agent_message_chunk', textFromMessage(message))
+      appendText('agent_thought_chunk', thinkingFromMessage(message))
+    }
+  }
+
+  const loadSession = async (message: JsonRpcRequest): Promise<void> => {
+    const sessionId = typeof message.params?.sessionId === 'string' ? message.params.sessionId : ''
+    const cwd = typeof message.params?.cwd === 'string' ? message.params.cwd : process.cwd()
+    if (!sessionId) {
+      if (message.id !== undefined) fail(message.id, -32602, `${message.method} requires sessionId`)
+      return
+    }
+    const mode = resolveSessionPermissionMode(message.params)
+    const mcpServers = await loadMcpServers()
+    let session: SDKSession
+    const onPermissionRequest = (permission: SDKPermissionRequestMessage): void => {
+      requestPermission(session.sessionId, session, permission)
+    }
+    session = await unstable_v2_resumeSession(sessionId, {
+      cwd,
+      permissionMode: mode as Parameters<typeof unstable_v2_resumeSession>[1]['permissionMode'],
+      allowDangerouslySkipPermissions: mode === 'bypassPermissions' || mode === 'fullAccess',
+      mcpServers,
+      onPermissionRequest,
+    })
+    sessions.set(sessionId, { cwd, mode, session, active: null })
+    if (message.id !== undefined) respond(message.id, { sessionId })
+    replayHistory(sessionId, session)
+    void advertiseCommands(sessionId, cwd)
+    emitUpdate(sessionId, configOptionsUpdate())
+    subscribeSessionStatus(sessions.get(sessionId)!)
+  }
+
+  const closeSession = async (message: JsonRpcRequest): Promise<void> => {
+    const sessionId = typeof message.params?.sessionId === 'string' ? message.params.sessionId : ''
+    const state = sessions.get(sessionId)
+    if (!state) {
+      if (message.id !== undefined) fail(message.id, -32004, `Unknown session: ${sessionId}`)
+      return
+    }
+    await state.session.close()
+    state.statusUnsubscribe?.()
+    sessions.delete(sessionId)
+    if (message.id !== undefined) respond(message.id, {})
+  }
+
+  const forwardToClient = (capabilitySupported: () => boolean): AcpHandler => async message => {
+    if (!capabilitySupported()) {
+      if (message.id !== undefined) fail(message.id, -32601, `Client does not support ${message.method}`)
+      return
+    }
+    const result = await callClient(message.method ?? '', message.params ?? {})
+    if (message.id !== undefined) respond(message.id, result)
+  }
+
+  const forwardFsRead = forwardToClient(() => supportsClientFsRead)
+  const forwardFsWrite = forwardToClient(() => supportsClientFsWrite)
+  const forwardTerminal = forwardToClient(() => supportsClientTerminal)
+  const forwardElicitation = forwardToClient(() => supportsClientElicitation)
+
   const handlers: Record<string, AcpHandler> = {
     initialize(message) {
       const capabilities = isRecord(message.params?.clientCapabilities)
         ? message.params.clientCapabilities
         : {}
       const sessionCapabilities = isRecord(capabilities.session) ? capabilities.session : {}
+      const fsCapabilities = isRecord(capabilities.fs) ? capabilities.fs : {}
       supportsCompaction = isRecord(sessionCapabilities.compaction)
       supportsNotices = isRecord(sessionCapabilities.notices)
+      supportsClientFsRead = fsCapabilities.readTextFile === true
+      supportsClientFsWrite = fsCapabilities.writeTextFile === true
+      supportsClientTerminal = capabilities.terminal === true
+      supportsClientElicitation = isRecord(capabilities.elicitation)
       if (message.id === undefined) return
       respond(message.id, {
         protocolVersion: ACP_PROTOCOL_VERSION,
         agentCapabilities: {
           loadSession: true,
-          promptCapabilities: { image: false, audio: false, embeddedContext: false },
+          promptCapabilities: { image: true, audio: false, embeddedContext: false },
         },
         agentInfo: ACP_AGENT_INFO,
       })
@@ -1058,7 +1198,7 @@ export function createAcpServer(
         mcpServers,
         onPermissionRequest,
       })
-      sessions.set(session.sessionId, { cwd, session, active: null })
+      sessions.set(session.sessionId, { cwd, mode, session, active: null })
       if (message.id !== undefined) respond(message.id, { sessionId: session.sessionId })
       // Advertise after the response so the client has adopted the session
       // store by the time the command list lands.
@@ -1067,32 +1207,8 @@ export function createAcpServer(
       subscribeSessionStatus(sessions.get(session.sessionId)!)
     },
 
-    'session/load': async message => {
-      const sessionId = typeof message.params?.sessionId === 'string' ? message.params.sessionId : ''
-      const cwd = typeof message.params?.cwd === 'string' ? message.params.cwd : process.cwd()
-      if (!sessionId) {
-        if (message.id !== undefined) fail(message.id, -32602, 'session/load requires sessionId')
-        return
-      }
-      const mode = resolveSessionPermissionMode(message.params)
-      const mcpServers = await loadMcpServers()
-      let session: SDKSession
-      const onPermissionRequest = (permission: SDKPermissionRequestMessage): void => {
-        requestPermission(session.sessionId, session, permission)
-      }
-      session = await unstable_v2_resumeSession(sessionId, {
-        cwd,
-        permissionMode: mode as Parameters<typeof unstable_v2_resumeSession>[1]['permissionMode'],
-        allowDangerouslySkipPermissions: mode === 'bypassPermissions' || mode === 'fullAccess',
-        mcpServers,
-        onPermissionRequest,
-      })
-      sessions.set(sessionId, { cwd, session, active: null })
-      if (message.id !== undefined) respond(message.id, { sessionId })
-      void advertiseCommands(sessionId, cwd)
-      emitUpdate(sessionId, configOptionsUpdate())
-      subscribeSessionStatus(sessions.get(sessionId)!)
-    },
+    'session/load': loadSession,
+    'session/resume': loadSession,
 
     'session/cancel'(message) {
       const sessionId = typeof message.params?.sessionId === 'string' ? message.params.sessionId : ''
@@ -1115,7 +1231,13 @@ export function createAcpServer(
 
       state.active = (async () => {
         try {
-          for await (const sdkMessage of state.session.sendMessage(textFromPrompt(message.params ?? {}))) {
+          const content = await contentBlocksFromPrompt(
+            message.params ?? {},
+            supportsClientFsRead
+              ? params => callClient('fs/read_text_file', params)
+              : async () => undefined,
+          )
+          for await (const sdkMessage of state.session.sendMessage(content)) {
             const text = textFromMessage(sdkMessage)
             if (text) {
               const update: AcpAgentMessageChunk = {
@@ -1188,6 +1310,85 @@ export function createAcpServer(
       }
       respond(message.id, await buildStatusSnapshot(state.session.getAppState(), state.session.getMessages()))
     },
+
+    authenticate(message) {
+      if (message.id !== undefined) respond(message.id, {})
+    },
+
+    'session/list'(message) {
+      if (message.id === undefined) return
+      respond(message.id, {
+        sessions: Array.from(sessions, ([sessionId, state]) => ({ sessionId, cwd: state.cwd })),
+      })
+    },
+
+    'session/set_mode': async message => {
+      const sessionId = typeof message.params?.sessionId === 'string' ? message.params.sessionId : ''
+      const state = sessions.get(sessionId)
+      if (!state) {
+        if (message.id !== undefined) fail(message.id, -32004, `Unknown session: ${sessionId}`)
+        return
+      }
+      const value = typeof message.params?.modeId === 'string' ? message.params.modeId : ''
+      const mode = resolveSessionPermissionMode({ _meta: { permissionMode: value } })
+      await state.session.setPermissionMode(mode as QueryPermissionMode)
+      state.mode = mode
+      emitUpdate(sessionId, { sessionUpdate: 'current_mode_update', currentModeId: mode })
+      if (message.id !== undefined) respond(message.id, {})
+    },
+
+    'session/set_config_option': async message => {
+      if (message.id === undefined) return
+      const configId = typeof message.params?.configId === 'string' ? message.params.configId : ''
+      const setting = buildConfigSettings().find(candidate => candidate.id === configId)
+      if (!setting) {
+        fail(message.id, -32602, `Unknown config option: ${configId}`)
+        return
+      }
+      await setting.write(message.params?.value as never)
+      respond(message.id, { configOptions: configOptionsUpdate().configOptions })
+    },
+
+    'session/delete': closeSession,
+    'session/close': closeSession,
+
+    // ACP v1 SDK 2.2.0 defines no fork request/response type, so this is a local extension.
+    'session/fork': async message => {
+      const sessionId = typeof message.params?.sessionId === 'string' ? message.params.sessionId : ''
+      const state = sessions.get(sessionId)
+      if (!state) {
+        if (message.id !== undefined) fail(message.id, -32004, `Unknown session: ${sessionId}`)
+        return
+      }
+      const mcpServers = await loadMcpServers()
+      let session: SDKSession
+      const onPermissionRequest = (permission: SDKPermissionRequestMessage): void => {
+        requestPermission(session.sessionId, session, permission)
+      }
+      session = unstable_v2_createSession({
+        cwd: state.cwd,
+        permissionMode: state.mode as Parameters<typeof unstable_v2_createSession>[0]['permissionMode'],
+        allowDangerouslySkipPermissions:
+          state.mode === 'bypassPermissions' || state.mode === 'fullAccess',
+        mcpServers,
+        onPermissionRequest,
+      })
+      const newId = session.sessionId
+      sessions.set(newId, { cwd: state.cwd, mode: state.mode, session, active: null })
+      if (message.id !== undefined) respond(message.id, { sessionId: newId })
+      void advertiseCommands(newId, state.cwd)
+      emitUpdate(newId, configOptionsUpdate())
+      subscribeSessionStatus(sessions.get(newId)!)
+    },
+
+    'fs/read_text_file': forwardFsRead,
+    'fs/write_text_file': forwardFsWrite,
+    'terminal/create': forwardTerminal,
+    'terminal/output': forwardTerminal,
+    'terminal/wait_for_exit': forwardTerminal,
+    'terminal/kill': forwardTerminal,
+    'terminal/release': forwardTerminal,
+    'elicitation/create': forwardElicitation,
   }
 
   const handle = async (message: JsonRpcRequest): Promise<void> => {
@@ -1197,7 +1398,8 @@ export function createAcpServer(
       // A JSON-RPC *response* (what the client sends when answering a
       // permission request) carries its payload in `result`, not `params`.
       // Fall back to `params` so a malformed response never crashes the loop.
-      resolve(message.result ?? message.params ?? {})
+      const error = isRecord(message.error) ? message.error : null
+      resolve(error ? { error } : message.result ?? message.params ?? {})
       return
     }
 

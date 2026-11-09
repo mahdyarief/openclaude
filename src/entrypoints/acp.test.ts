@@ -11,6 +11,12 @@ type PermissionResult = {
 const responded: Array<{ toolUseId: string; decision: PermissionResult }> = []
 const permissionCallbacks: Array<(message: unknown) => void> = []
 const closeCalls: Array<Promise<void>> = []
+const sentContents: unknown[] = []
+const modeCalls: string[] = []
+const configWrites: Array<{ id: string; value: unknown }> = []
+let configSettings: unknown[] = []
+let replayMessages: unknown[] = []
+let nextFakeSessionId = 0
 
 let promptMessages: unknown[] = [
   {
@@ -21,10 +27,14 @@ let promptMessages: unknown[] = [
 
 const fakeSession = {
   sessionId: 'fake-session-id',
-  sendMessage: async function* () {
+  sendMessage: async function* (content: unknown) {
+    sentContents.push(content)
     for (const message of promptMessages) yield message
   },
-  getMessages: () => [],
+  getMessages: () => replayMessages,
+  setPermissionMode: async (mode: string) => {
+    modeCalls.push(mode)
+  },
   getAppState: () => ({
     todos: { 'agent-1': [{ content: 'integration step', status: 'in_progress' }] },
     notifications: {
@@ -50,22 +60,24 @@ mock.module('./sdk/v2.js', () => ({
   ...realV2,
   unstable_v2_createSession: (options: { onPermissionRequest?: (m: unknown) => void }) => {
     if (options.onPermissionRequest) permissionCallbacks.push(options.onPermissionRequest)
-    return fakeSession
+    const id = nextFakeSessionId
+    if (id === 0) return fakeSession
+    nextFakeSessionId++
+    return { ...fakeSession, sessionId: `new-session-${id}` }
   },
   unstable_v2_resumeSession: async (
     id: string,
     options: { onPermissionRequest?: (m: unknown) => void },
   ) => {
     if (options.onPermissionRequest) permissionCallbacks.push(options.onPermissionRequest)
-    return { ...fakeSession, sessionId: id }
+    return { ...fakeSession, sessionId: id, getMessages: () => replayMessages }
   },
 }))
 mock.module('./init.js', () => ({ init: async () => {} }))
 // `studioConfigSurface` pulls in bun:bundle feature() macros that the test
-// runner cannot transform, so keep the settings registry out of the harness.
-// The config snapshot is compared before/after with the same empty registry.
+// runner cannot transform, so supply a mutable registry instead.
 mock.module('../utils/studioConfigSurface.js', () => ({
-  buildConfigSettings: () => [],
+  buildConfigSettings: () => configSettings,
 }))
 
 const m1Snapshot = {
@@ -249,6 +261,19 @@ describe('acp permission routing', () => {
   beforeEach(() => {
     responded.length = 0
     permissionCallbacks.length = 0
+    closeCalls.length = 0
+    sentContents.length = 0
+    modeCalls.length = 0
+    configWrites.length = 0
+    configSettings = []
+    replayMessages = []
+    nextFakeSessionId = 0
+    promptMessages = [
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'characterization chunk' }] },
+      },
+    ]
   })
 
   it('routes a permission response carried in `result` to respondToPermission', async () => {
@@ -796,6 +821,7 @@ describe('acp M1 JSON-RPC fixture', () => {
   })
 
   it('emits per-message kinds from the prompt stream', async () => {
+    nextFakeSessionId = 0
     promptMessages = [
       { type: 'user', message: { content: [{ type: 'text', text: 'user turn' }] } },
       {
@@ -926,4 +952,213 @@ describe('permissionPresentationFor', () => {
       else expect(preview.diff).toBeNull()
     })
   }
+})
+
+describe('acp M5 session surface', () => {
+  beforeEach(() => {
+    responded.length = 0
+    permissionCallbacks.length = 0
+    closeCalls.length = 0
+    sentContents.length = 0
+    modeCalls.length = 0
+    configWrites.length = 0
+    configSettings = []
+    replayMessages = []
+    nextFakeSessionId = 0
+    promptMessages = [
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'characterization chunk' }] },
+      },
+    ]
+  })
+
+  const initialize = async (h: ReturnType<typeof createHarness>, id = 1, capabilities: Record<string, unknown> = {}) => {
+    h.send({ jsonrpc: '2.0', id, method: 'initialize', params: { clientCapabilities: capabilities } })
+    return h.waitFor(m => m.id === id, 'initialize')
+  }
+
+  it('lists two sessions and advertises image prompt support', async () => {
+    const h = createHarness()
+    try {
+      const init = await initialize(h)
+      expect((init.result as any).agentCapabilities.promptCapabilities).toEqual({
+        image: true,
+        audio: false,
+        embeddedContext: false,
+      })
+      nextFakeSessionId = 1
+      h.send({ jsonrpc: '2.0', id: 2, method: 'session/new', params: { cwd: '/tmp' } })
+      await h.waitFor(m => m.id === 2, 'first session')
+      h.send({ jsonrpc: '2.0', id: 3, method: 'session/new', params: { cwd: '/other' } })
+      await h.waitFor(m => m.id === 3, 'second session')
+      h.send({ jsonrpc: '2.0', id: 4, method: 'session/list', params: {} })
+      const listed = await h.waitFor(m => m.id === 4, 'session/list')
+      expect((listed.result as any).sessions).toEqual([
+        { sessionId: 'new-session-1', cwd: '/tmp' },
+        { sessionId: 'new-session-2', cwd: '/other' },
+      ])
+    } finally {
+      await h.close()
+    }
+  })
+
+  it('sets permission mode and emits a current mode update', async () => {
+    const h = createHarness()
+    try {
+      await initialize(h)
+      h.send({ jsonrpc: '2.0', id: 2, method: 'session/new', params: { cwd: '/tmp' } })
+      await h.waitFor(m => m.id === 2, 'session/new')
+      h.send({ jsonrpc: '2.0', id: 3, method: 'session/set_mode', params: { sessionId: 'fake-session-id', modeId: 'acceptEdits' } })
+      await h.waitFor(m => m.id === 3, 'session/set_mode')
+      expect(modeCalls).toEqual(['acceptEdits'])
+      const update = await h.waitFor(
+        m => m.method === 'session/update' && (m.params as any)?.update?.sessionUpdate === 'current_mode_update' && (m.params as any)?.update?.currentModeId === 'acceptEdits',
+        'current_mode_update',
+      )
+      expect(update.method).toBe('session/update')
+    } finally {
+      await h.close()
+    }
+  })
+
+  it('passes image prompts through as base64 content blocks', async () => {
+    const h = createHarness()
+    try {
+      await initialize(h)
+      h.send({ jsonrpc: '2.0', id: 2, method: 'session/new', params: { cwd: '/tmp' } })
+      await h.waitFor(m => m.id === 2, 'session/new')
+      h.send({
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'session/prompt',
+        params: {
+          sessionId: 'fake-session-id',
+          prompt: [{ type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' }],
+        },
+      })
+      await h.waitFor(m => m.id === 3, 'session/prompt')
+      expect(sentContents).toContainEqual([
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGVsbG8=' } },
+      ])
+    } finally {
+      await h.close()
+    }
+  })
+
+  it('replays loaded user and assistant history once', async () => {
+    const h = createHarness()
+    replayMessages = [
+      { type: 'user', message: { content: [{ type: 'text', text: 'previous question' }] } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'previous answer' }] } },
+    ]
+    try {
+      await initialize(h)
+      h.send({ jsonrpc: '2.0', id: 2, method: 'session/load', params: { sessionId: 'resumed-id', cwd: '/tmp' } })
+      await h.waitFor(m => m.id === 2, 'session/load')
+      const user = await h.waitFor(
+        m => m.method === 'session/update' && (m.params as any)?.update?.content?.text === 'previous question',
+        'replayed user chunk',
+      )
+      const assistant = await h.waitFor(
+        m => m.method === 'session/update' && (m.params as any)?.update?.content?.text === 'previous answer',
+        'replayed assistant chunk',
+      )
+      expect((user.params as any).update.sessionUpdate).toBe('user_message_chunk')
+      expect((assistant.params as any).update.sessionUpdate).toBe('agent_message_chunk')
+      const replayed = h.output.filter(m => m.method === 'session/update' && (m.params as any)?.update?.content?.text === 'previous answer')
+      expect(replayed).toHaveLength(1)
+    } finally {
+      await h.close()
+    }
+  })
+
+  it('forks into a new listed session without copying history', async () => {
+    const h = createHarness()
+    try {
+      await initialize(h)
+      h.send({ jsonrpc: '2.0', id: 2, method: 'session/new', params: { cwd: '/tmp' } })
+      await h.waitFor(m => m.id === 2, 'session/new')
+      nextFakeSessionId = 1
+      h.send({ jsonrpc: '2.0', id: 3, method: 'session/fork', params: { sessionId: 'fake-session-id' } })
+      const forked = await h.waitFor(m => m.id === 3, 'session/fork')
+      expect((forked.result as any).sessionId).toBe('new-session-1')
+      h.send({ jsonrpc: '2.0', id: 4, method: 'session/list', params: {} })
+      const listed = await h.waitFor(m => m.id === 4, 'session/list')
+      expect((listed.result as any).sessions).toContainEqual({ sessionId: 'new-session-1', cwd: '/tmp' })
+    } finally {
+      await h.close()
+    }
+  })
+
+  it('closes and deletes sessions with awaited cleanup', async () => {
+    const h = createHarness()
+    try {
+      await initialize(h)
+      h.send({ jsonrpc: '2.0', id: 2, method: 'session/new', params: { cwd: '/tmp' } })
+      await h.waitFor(m => m.id === 2, 'session/new')
+      h.send({ jsonrpc: '2.0', id: 3, method: 'session/delete', params: { sessionId: 'fake-session-id' } })
+      await h.waitFor(m => m.id === 3, 'session/delete')
+      expect(closeCalls).toHaveLength(1)
+      h.send({ jsonrpc: '2.0', id: 4, method: 'session/load', params: { sessionId: 'second-id', cwd: '/tmp' } })
+      await h.waitFor(m => m.id === 4, 'session/load')
+      h.send({ jsonrpc: '2.0', id: 5, method: 'session/close', params: { sessionId: 'second-id' } })
+      await h.waitFor(m => m.id === 5, 'session/close')
+      expect(closeCalls).toHaveLength(2)
+      h.send({ jsonrpc: '2.0', id: 6, method: 'session/list', params: {} })
+      const listed = await h.waitFor(m => m.id === 6, 'session/list')
+      expect((listed.result as any).sessions).toEqual([])
+    } finally {
+      await h.close()
+    }
+  })
+
+  it('writes a config option and responds with the resulting options', async () => {
+    configSettings = [{
+      id: 'model',
+      type: 'select',
+      label: 'Model',
+      description: 'Model setting',
+      options: ['gpt', 'opus'],
+      read: () => 'opus',
+      write: (value: unknown) => configWrites.push({ id: 'model', value }),
+    }]
+    const h = createHarness()
+    try {
+      await initialize(h)
+      h.send({ jsonrpc: '2.0', id: 2, method: 'session/set_config_option', params: { sessionId: 'fake-session-id', configId: 'model', value: 'gpt' } })
+      const response = await h.waitFor(m => m.id === 2, 'config option response')
+      expect(configWrites).toEqual([{ id: 'model', value: 'gpt' }])
+      expect(response.result).toEqual({
+        configOptions: [{
+          id: 'model',
+          name: 'Model',
+          type: 'select',
+          currentValue: 'opus',
+          options: [{ value: 'gpt', name: 'gpt' }, { value: 'opus', name: 'opus' }],
+        }],
+      })
+      h.send({ jsonrpc: '2.0', id: 3, method: 'session/set_config_option', params: { sessionId: 'fake-session-id', configId: 'missing', value: 'gpt' } })
+      expect((await h.waitFor(m => m.id === 3, 'unknown config option')).error).toMatchObject({ code: -32602 })
+      h.send({ jsonrpc: '2.0', id: 4, method: 'authenticate', params: {} })
+      expect((await h.waitFor(m => m.id === 4, 'authenticate')).result).toEqual({})
+    } finally {
+      await h.close()
+    }
+  })
+
+  it('forwards fs reads to the client and resolves from a matching result', async () => {
+    const h = createHarness()
+    try {
+      await initialize(h, 1, { fs: { readTextFile: true } })
+      h.send({ jsonrpc: '2.0', id: 2, method: 'fs/read_text_file', params: { path: '/tmp/a.txt', sessionId: 'fake-session-id' } })
+      const outbound = await h.waitFor(m => m.method === 'fs/read_text_file', 'outbound fs request')
+      expect(outbound.params).toEqual({ path: '/tmp/a.txt', sessionId: 'fake-session-id' })
+      h.send({ jsonrpc: '2.0', id: outbound.id, result: { content: 'hello file' } })
+      const response = await h.waitFor(m => m.id === 2 && m.method === undefined, 'forwarded fs result')
+      expect(response.result).toEqual({ content: 'hello file' })
+    } finally {
+      await h.close()
+    }
+  })
 })
