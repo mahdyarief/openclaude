@@ -57,7 +57,11 @@ export type {
 } from "./CodeBlock.js";
 
 export { ConfigPanel } from "./ConfigPanel.js";
-export type { ConfigPanelProps, ConfigPanelLabels } from "./ConfigPanel.js";
+export type {
+  ConfigPanelProps,
+  ConfigPanelLabels,
+  ConfigSection,
+} from "./ConfigPanel.js";
 
 export { QuestionPanel } from "./QuestionPanel.js";
 export type { QuestionPanelProps } from "./QuestionPanel.js";

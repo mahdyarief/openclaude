@@ -13,6 +13,11 @@ import {
   ResourceUsageFooter,
   SessionStatusBar,
   SessionTabs,
+  SlashCommandNotice,
+  SlashCommandPanel,
+  type ConfigSection,
+  type DiffPart,
+  type StudioPanelKind,
 } from '@openclaude-studio/ui'
 import {
   PERMISSION_MODE_LABELS,
@@ -21,6 +26,7 @@ import {
   type AgentStatusSnapshot,
   type ConnectionStatus,
   type PermissionMode,
+  type SessionSummary,
 } from '@openclaude-studio/acp'
 import type { BridgeConfig } from './bridge-config.js'
 import type { ActiveProject } from './project-store.js'
@@ -29,8 +35,9 @@ import { useFileContent, useFileTree } from './use-file-tree.js'
 import { groupSessions, useProjectSessions } from './use-projects.js'
 import { useTabs, type Tab } from './use-tabs.js'
 import { usePageVisibility } from './use-page-visibility.js'
-import { useWorkspaceSessions } from './use-workspace-sessions.js'
+import { useWorkspaceSessions, type WorkspaceSessionMap, type WorkspaceSessions } from './use-workspace-sessions.js'
 import { useMetrics } from './use-metrics.js'
+import { configSectionFor, routeSlashCommand } from './slash-command-routing.js'
 
 /** The mode selector's entries — derived from the canonical list so adding a
  *  mode to `@openclaude-studio/acp` automatically extends this dropdown. */
@@ -305,6 +312,16 @@ export function Workbench({
                   }
                   onSessionCreated={realId => handleSessionCreated(tab.tabId, realId, tab.cwd)}
                   onConnectionFailed={onConnectionFailed}
+                  workspaceSessions={byPath[tab.cwd] ?? { sessions: [], loading: true, error: null }}
+                  onOpenSession={session => {
+                    openTab({
+                      tabId: session.id,
+                      kind: 'session',
+                      sessionId: session.id,
+                      title: session.title || session.id,
+                      cwd: tab.cwd,
+                    })
+                  }}
                 />
               </div>
             )
@@ -336,6 +353,8 @@ function SessionPane({
   onPermissionModeChange,
   onSessionCreated,
   onConnectionFailed,
+  workspaceSessions,
+  onOpenSession,
 }: {
   config: BridgeConfig
   cwd: string
@@ -350,6 +369,10 @@ function SessionPane({
   onPermissionModeChange: (mode: PermissionMode) => void
   onSessionCreated: (realId: string) => void
   onConnectionFailed?: (() => void) | undefined
+  /** saved sessions for this workspace, for `/sessions` and `/resume` */
+  workspaceSessions: WorkspaceSessions
+  /** open a saved session in a tab */
+  onOpenSession: (session: SessionSummary) => void
 }) {
   // Freeze the id the pane opened with. A temp tab gains its real id after the
   // first prompt; once we have that stable identity, tear down the live socket
@@ -386,9 +409,11 @@ function SessionPane({
   })
   const [draft, setDraft] = useState('')
   const [configOpen, setConfigOpen] = useState(false)
-  const [configSection, setConfigSection] =
-    useState<"model" | "theme" | "provider" | "settings" | "all">("all")
+  const [configSection, setConfigSection] = useState<ConfigSection>('all')
   const [statusSnapshot, setStatusSnapshot] = useState<AgentStatusSnapshot | null>(null)
+  const [panel, setPanel] = useState<StudioPanelKind>('status')
+  const [panelOpen, setPanelOpen] = useState(false)
+  const [commandNotice, setCommandNotice] = useState<{ title: string; description: string } | null>(null)
 
   useEffect(() => {
     // A failed stored connection falls back to the connect screen automatically.
@@ -426,10 +451,39 @@ function SessionPane({
   // agent automatically, so the user never waits on a manual reconnect first.
   const disabled = status !== 'ready' && status !== 'idle'
 
+  // Both the `/` menu and a typed `/command` + Enter land here, so a command
+  // the agent advertises as terminal UI never reaches it as a prompt that
+  // resolves with no output. Returns true when the command was handled here.
+  function handleSlashCommand(input: string): boolean {
+    const route = routeSlashCommand(input, state.commands)
+    if (route.kind === 'config') {
+      setCommandNotice(null)
+      setConfigSection(configSectionFor(route.name))
+      setConfigOpen(true)
+      return true
+    }
+    if (route.kind === 'panel') {
+      setCommandNotice(null)
+      setPanel(route.name)
+      setPanelOpen(true)
+      return true
+    }
+    if (route.kind === 'unsupported') {
+      setCommandNotice({
+        title: `/${route.name} is not available in Studio`,
+        description:
+          'This command renders an interactive terminal UI, which cannot run over ACP. Run it from the OpenClaude CLI instead. Your message was not sent.',
+      })
+      return true
+    }
+    return false
+  }
+
   async function submit() {
     const text = draft.trim()
     if (!text || disabled) return
     setDraft('')
+    if (handleSlashCommand(text)) return
     // Never create a session on mount; only the first prompt may.
     if (!sessionId) {
       const id = await ensureSession()
@@ -500,12 +554,44 @@ function SessionPane({
           </div>
         </div>
       ) : null}
+      {commandNotice ? (
+        <SlashCommandNotice
+          title={commandNotice.title}
+          description={commandNotice.description}
+          onDismiss={() => setCommandNotice(null)}
+        />
+      ) : null}
       <ConfigDialog
         open={configOpen}
         onOpenChange={setConfigOpen}
         section={configSection}
         fetchConfig={getConfig}
         patchConfig={setConfig}
+      />
+      <SlashCommandPanel
+        open={panelOpen}
+        panel={panel}
+        onOpenChange={setPanelOpen}
+        data={{
+          permissionMode,
+          modes: PERMISSION_MODES.map(id => ({ id, label: PERMISSION_MODE_LABELS[id] })),
+          onModeChange: id => {
+            if (isPermissionMode(id)) onPermissionModeChange(id)
+          },
+          status: statusSnapshot,
+          usage: state.usage,
+          diffs: Object.values(state.toolCalls).flatMap(call =>
+            (call.content ?? []).filter((part): part is DiffPart => part.type === 'diff'),
+          ),
+          sessions: workspaceSessions.sessions,
+          sessionsLoading: workspaceSessions.loading,
+          sessionsError: workspaceSessions.error,
+          onOpenSession: id => {
+            setPanelOpen(false)
+            const match = workspaceSessions.sessions.find(session => session.id === id)
+            if (match) onOpenSession(match)
+          },
+        }}
       />
       <PromptBar
         value={draft}
@@ -529,13 +615,9 @@ function SessionPane({
         labels={{ placeholder: disabled ? 'Connecting…' : 'Ask OpenClaude…' }}
         commands={state.commands}
         onCommandPick={name => {
-          // Interactive commands render terminal UI and cannot run over ACP,
-          // so open the studio's own panel for the ones we implement. Each
-          // command lands on its own section instead of always showing model.
-          if (name === 'config' || name === 'provider' || name === 'model' || name === 'theme') {
-            setConfigSection(name === 'config' ? 'all' : name)
-            setConfigOpen(true)
-          }
+          // A menu pick carries the bare name; route it through the same
+          // decision as typed input so both paths stay in sync.
+          if (handleSlashCommand(`/${name}`)) return
         }}
       />
       <SessionStatusBar status={statusSnapshot} />

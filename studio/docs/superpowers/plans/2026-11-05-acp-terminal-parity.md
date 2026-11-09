@@ -301,15 +301,62 @@ adalah gate **Remote Control bridge / mobile**, bukan jalur ACP. Jalur ACP memak
 `available_commands_update` yang mengiklankan command + `_meta.type` (`acp.ts:251–270`).
 Keputusan D4: **jangan** mengubah gate bridge untuk paritas ACP.
 
-- [ ] Perluas panel di `Workbench.tsx:526–532` dari 4 (`config|provider|model|theme`) ke
+- [x] Perluas panel di `Workbench.tsx:526–532` dari 4 (`config|provider|model|theme`) ke
       `/permissions`, `/mcp`, `/status`, `/diff`, `/tasks`, `/usage`, `/resume`, `/sessions`
-- [ ] Manfaatkan hook `_meta.type` yang sudah dikirim `available_commands_update`
+- [x] Manfaatkan hook `_meta.type` yang sudah dikirim `available_commands_update`
       (`acp.ts:251–270`)
-- [ ] Command yang benar-benar terminal-only: beri pesan eksplisit, jangan di-swallow tanpa
+- [x] Command yang benar-benar terminal-only: beri pesan eksplisit, jangan di-swallow tanpa
       feedback
-- [ ] Test: tiap command yang dipetakan membuka panel yang benar
+- [x] Test: tiap command yang dipetakan membuka panel yang benar
 
 **Selesai jika:** tidak ada command yang diketik user berujung prompt kosong tanpa penjelasan.
+✅ Terpenuhi: `/status` (atau command lain yang dipetakan) yang diketik + Enter membuka panel
+Studio, dan command `local-jsx`/`local` yang tidak dipetakan menampilkan `SlashCommandNotice`
+("… Your message was not sent.") alih-alih mengirim prompt tanpa output.
+
+**Catatan M4 (implementasi & keterbatasan):**
+
+- Akar masalah sebelumnya: `PromptBar.pick()` (`packages/ui/src/beautifui/PromptBar.tsx:139`)
+  hanya mencegat `local-jsx` saat **memilih dari menu** `/`. Command yang **diketik** lalu
+  ditekan Enter jatuh ke `sendPrompt`, sehingga prompt terkirim dan selesai tanpa output.
+  Perbaikan ada di `submit()` (`apps/web/src/Workbench.tsx`), satu titik yang dilewati kedua
+  jalur: menu pick memanggil handler yang sama lewat `onCommandPick(name)`.
+- Keputusan pemetaan dipusatkan di fungsi murni `routeSlashCommand` /
+  `configSectionFor` (`apps/web/src/slash-command-routing.ts`), bukan di JSX, sehingga bisa
+  diuji tanpa DOM. Empat command lama tetap lewat `ConfigDialog`; delapan command baru lewat
+  `SlashCommandPanel`.
+- Gate bridge **tidak disentuh** (D4). `isBridgeSafeCommand` / `REMOTE_SAFE_COMMANDS`
+  (`src/commands.ts:683–755`) tetap milik Remote Control/mobile; paritas ACP memakai
+  `_meta.type` dari `available_commands_update`.
+- `_meta.type` dipakai untuk **cakupan luas**: selain 12 command yang dipetakan, command apa
+  pun yang diiklankan `local-jsx` **atau** `local` menghasilkan route `unsupported` +
+  `SlashCommandNotice`, jadi tidak ada nama command terminal-only yang tertelan diam-diam.
+  Test transport `_meta.type` sudah ada sejak M3
+  (`packages/acp/test/updates.test.ts:217`), tidak diduplikasi.
+- `/mcp` **belum** punya state server di klien (M5 menambah `mcpServers`), jadi panelnya
+  menampilkan empty state jujur ("not available in Studio yet") alih-alih data palsu.
+- Sumber data panel: `/permissions` ← `statusSnapshot.permissionMode` (fallback prop lokal);
+  `/status` ← `statusSnapshot`; `/usage` ← `state.usage` + `contextWindow`/`session.costUsd`;
+  `/diff` ← `state.toolCalls[*].content` difilter `type === 'diff'` lalu dirender `DiffLines`;
+  `/tasks` ← `statusSnapshot.backgroundTasks`; `/sessions` & `/resume` ←
+  `useWorkspaceSessions().byPath[tab.cwd]` yang di-thread dari parent.
+- UI tetap komposisi primitif: `Dialog`/`ScrollArea`/`Card`/`Badge`/`Button` + `DiffLines`.
+  `SlashCommandPanelBody` diekspor terpisah karena `DialogContent` Radix dirender lewat
+  portal, sehingga `renderToStaticMarkup` tidak bisa memeriksa isinya dari `<Dialog>`. Tidak
+  ada dependency baru.
+
+**Verifikasi M4 (semua `EXIT=0`):**
+
+- `corepack pnpm -r typecheck` (dari `studio/`) → `acp`, `bridge`, `ui`, `web` Done.
+- `corepack pnpm exec vitest run` (dari `studio/`) → 30 file / **231 test** hijau; termasuk
+  `apps/web/test/slash-command-routing.test.ts` (25 test: 4 config, 8 panel, argumen
+  ekor, trim, `local-jsx`/`local` tak terpetakan → `unsupported`, `prompt`, fallback,
+   serta judul unik per panel) dan
+  `packages/ui/src/shell/SlashCommandPanel.test.tsx` (15 test: isi tiap panel, state
+  loading/error/kosong sesi, `SlashCommandNotice`).
+- `corepack pnpm -r build` (dari `studio/`) → Done.
+- `bun run typecheck` (dari root repo) → `EXIT=0`.
+- `bun test src/entrypoints/acp.test.ts` (dari root repo) → 39 pass / 0 fail, 125 `expect()`.
 
 ### M5 — Siklus sesi, filesystem, terminal, MCP, lampiran
 
