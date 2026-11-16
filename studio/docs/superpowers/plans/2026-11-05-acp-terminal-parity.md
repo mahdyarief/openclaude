@@ -429,22 +429,23 @@ Pengecualian terdokumentasi (semua diverifikasi terhadap base, bukan regresi M5)
 - `bun run test:provider` gagal pada worktree base bersih dengan dependensi yang sama
   (76 fail / 1728 test) maupun pada working tree M5 (77 fail / 1729 test), keduanya
   `EXIT=1`. Diff M5 tidak menyentuh `src/services/**` atau `src/utils/**` (0 baris).
-- `bun run check` berakhir `EXIT=0`, tetapi log-nya memuat
-  `SyntaxError: Export named 'formatDescriptionWithSource' not found in module
-  'src/commands.ts'` pada `src/QueryEngine.autoCompactCooldown.test.ts:39`. Gejala identik
-  muncul pada worktree base `b8568d3a`; suite tetap berlanjut dan keseluruhan perintah
-  sukses.
-- `bun run security:pr-scan -- --base FETCH_HEAD --head HEAD` tidak dapat dijalankan apa
-  adanya: `scripts/pr-intent-scan.ts` memanggil `spawnSync('git', ...)` tanpa `maxBuffer`,
-  sehingga diff PR 2.654.006 byte (merge-base `5cd11336`, sudah termasuk commit M5;
-  2.596.810 byte pada M4 tip `b8568d3a`) melewati batas default 1 MB dan skrip gagal
-  dengan `PR intent scan failed: git diff failed`. Salinan skrip identik dengan
-  `maxBuffer: 64 * 1024 * 1024` pada kedua `spawnSync` (di `/tmp`, repo tidak diubah),
-  dijalankan ulang setelah commit M5, berakhir `EXIT=0` dengan
-  **14 medium / 0 high**: `release.yml` (2), `scripts/acp-web-server.mjs` (4),
-  `scripts/build.ts` (7), `src/tools/FileReadTool/prompt.vision.test.ts:138` (1).
-  Seluruhnya pada baris yang sudah ada sebelumnya; tidak ada temuan pada file M5.
-  Perbaikan `maxBuffer` sengaja tidak dilakukan di M5 agar perubahan tetap fokus.
+Dua temuan yang semula dicatat sebagai pengecualian sudah diperbaiki (keduanya bug
+infrastruktur pengujian, bukan regresi M5):
+
+- `SyntaxError: Export named 'formatDescriptionWithSource' not found in module
+  'src/commands.ts'` pada `src/QueryEngine.autoCompactCooldown.test.ts:39` — fixture
+  mem-mock `../../commands.js` tanpa ekspor itu, sementara `QueryEngine` mengimpornya lewat
+  `suggestions/commandSuggestions`. Stub `formatDescriptionWithSource: () => ''` ditambahkan
+  ke mock. `bun test ./src/QueryEngine.autoCompactCooldown.test.ts` → **1 pass / 0 fail**,
+  dan `bun run check` kini bersih dari `SyntaxError` itu.
+- `bun run security:pr-scan -- --base FETCH_HEAD --head HEAD` gagal dengan
+  `PR intent scan failed: git diff failed` karena `scripts/pr-intent-scan.ts` memanggil
+  `spawnSync('git', ...)` tanpa `maxBuffer` (diff PR 2.654.006 byte vs batas default 1 MB).
+  Kedua `spawnSync` di `getGitDiff` kini memakai `maxBuffer: 64 * 1024 * 1024`. Pemindaian
+  berakhir **EXIT=0** dengan **14 medium / 0 high**: `.github/workflows/release.yml` (2),
+  `scripts/acp-web-server.mjs` (4), `scripts/build.ts` (7),
+  `src/tools/FileReadTool/prompt.vision.test.ts:138` (1) — seluruhnya baris pra-ada, tidak
+  ada temuan pada file M5. `bun test ./scripts/pr-intent-scan.test.ts` → **13 pass**.
 
 ### M6 — Build & deploy
 
