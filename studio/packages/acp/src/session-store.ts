@@ -8,6 +8,7 @@ export type SessionStoreApi = StoreApi<SessionState> & {
   enqueuePermission: (request: PermissionRequest) => void
   resolvePermission: (requestId: PermissionRequest['requestId']) => void
   setStreaming: (streaming: boolean) => void
+  dismissNotice: () => void
 }
 
 export function createSessionStore(
@@ -44,6 +45,9 @@ export function createSessionStore(
     },
     setStreaming: streaming => {
       store.setState({ streaming })
+    },
+    dismissNotice: () => {
+      store.setState(state => ({ ...state, notice: null }))
     },
   }
 }

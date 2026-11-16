@@ -315,6 +315,7 @@ describe('ACP client capabilities and forwarded requests', () => {
         fs: { readTextFile: true, writeTextFile: true },
         terminal: true,
         elicitation: { form: {}, url: {} },
+        session: { notices: {}, compaction: {}, configOptions: { boolean: {} } },
       })
       expect(results['fs/read_text_file']).toEqual({ content: 'original' })
       expect(results['fs/write_text_file']).toEqual({})

@@ -3,6 +3,8 @@ import type {
   AgentQuestion,
   ConnectionStatus,
   ConversationMessage,
+  Plan,
+  SessionConfigOption,
   StopReason,
   ToolCall,
 } from '@openclaude-studio/acp'
@@ -11,6 +13,11 @@ import { cn } from '../lib/cn.js'
 import { Button } from '../shadcn/button.js'
 import { Skeleton } from '../shadcn/skeleton.js'
 import { MessageList } from './MessageList.js'
+import {
+  SessionActivity,
+  type SessionCompactionSummary,
+  type SessionNotice,
+} from './SessionActivity.js'
 
 export type ChatPaneProps = {
   messages: ConversationMessage[]
@@ -36,6 +43,20 @@ export type ChatPaneProps = {
   reloading?: boolean
   /** true after the user ended the session */
   ended?: boolean
+  /** dismissible agent notice from the latest session update */
+  notice?: SessionNotice | null | undefined
+  /** called when the user dismisses the notice */
+  onDismissNotice?: (() => void) | undefined
+  /** the agent's current execution plan */
+  plan?: Plan | null | undefined
+  /** context compaction events reported by the agent */
+  compactions?: SessionCompactionSummary[] | undefined
+  /** configurable session options advertised by the agent */
+  configOptions?: SessionConfigOption[] | undefined
+  /** change a configurable session option */
+  onConfigOptionChange?: ((optionId: string, value: string | boolean) => void) | undefined
+  /** agent-supplied session title, shown in the status header when available */
+  sessionTitle?: string | null | undefined
   /** composer pinned to the bottom */
   children?: ReactNode
 }
@@ -81,6 +102,13 @@ export function ChatPane({
   onEnd,
   reloading,
   ended,
+  notice,
+  onDismissNotice,
+  plan,
+  compactions,
+  configOptions,
+  onConfigOptionChange,
+  sessionTitle,
   children,
 }: ChatPaneProps) {
   const stopLabel = stopReason ? (STOP_LABELS[stopReason] ?? stopReason) : null
@@ -97,6 +125,11 @@ export function ChatPane({
       >
         <span aria-hidden className={cn('size-1.5 rounded-full', tone.dot)} />
         <span className="truncate">{STATUS_LABELS[status]}</span>
+        {sessionTitle ? (
+          <span className="ml-1 truncate text-ink-3" title={sessionTitle}>
+            Session: {sessionTitle}
+          </span>
+        ) : null}
         {status === 'idle' ? (
           <Button
             variant="quiet"
@@ -133,6 +166,15 @@ export function ChatPane({
           <span className="ml-2 text-[11px] text-ink-3">Ended</span>
         ) : null}
       </div>
+
+      <SessionActivity
+        notice={notice}
+        onDismissNotice={onDismissNotice}
+        plan={plan}
+        compactions={compactions}
+        configOptions={configOptions}
+        onConfigOptionChange={onConfigOptionChange}
+      />
 
       <div className="min-h-0 flex-1 relative">
         {loadingHistory ? (

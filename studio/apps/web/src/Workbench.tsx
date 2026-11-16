@@ -441,6 +441,8 @@ function SessionPane({
     setConfig,
     getStatus,
     onStatus,
+    dismissNotice,
+    setConfigOption,
     sessions,
     remoteSessionList,
     refreshSessionList,
@@ -583,6 +585,13 @@ function SessionPane({
       onEnd={disconnect}
       reloading={reloading}
       ended={ended}
+      notice={state.notice}
+      onDismissNotice={() => dismissNotice()}
+      plan={state.plan}
+      compactions={Object.values(state.compactions)}
+      configOptions={state.configOptions}
+      onConfigOptionChange={(id, value) => void setConfigOption(id, value)}
+      sessionTitle={state.title}
     >
       {pendingPermission && !pendingPermission.questions?.length ? (
         <div

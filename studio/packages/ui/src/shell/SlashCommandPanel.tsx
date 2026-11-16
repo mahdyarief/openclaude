@@ -96,6 +96,32 @@ function formatTokens(tokens: number): string {
   return tokens.toLocaleString('en-US')
 }
 
+function McpPanel({ data }: { data: SlashCommandPanelData }) {
+  const servers = data.status?.mcpServers ?? []
+  if (servers.length === 0) {
+    return <Empty>No MCP servers are attached to this session.</Empty>
+  }
+  return (
+    <div className="flex flex-col gap-1" role="list" aria-label="MCP servers">
+      {servers.map(server => (
+        <div
+          key={server.name}
+          role="listitem"
+          className="flex flex-col gap-1 border-b border-line py-1.5 last:border-b-0"
+        >
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-[13px] text-ink">{server.name}</span>
+            <Badge variant={server.status === 'approved' ? 'default' : 'outline'}>
+              {server.status}
+            </Badge>
+          </div>
+          {server.error ? <p className="text-[12px] text-red">{server.error}</p> : null}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function PermissionsPanel({ data }: { data: SlashCommandPanelData }) {
   const active = data.status?.permissionMode ?? data.permissionMode
   return (
@@ -280,13 +306,7 @@ export function SlashCommandPanelBody({
     case 'permissions':
       return <PermissionsPanel data={data} />
     case 'mcp':
-      return (
-        <Empty>
-          MCP server status is not available in Studio yet. Manage servers from
-          the OpenClaude CLI; this command cannot render the terminal-only MCP
-          picker in the browser.
-        </Empty>
-      )
+      return <McpPanel data={data} />
     case 'status':
       return <StatusPanel data={data} />
     case 'diff':

@@ -273,7 +273,11 @@ const FS_CAPABILITIES = { readTextFile: true, writeTextFile: true } as const
 // The notice/compaction handlers live in updates.ts rather than here, but the
 // capability must be advertised from the same handshake so the agent never
 // emits these kinds to a client that would drop them.
-const SESSION_CAPABILITIES = { notices: {}, compaction: {} } as const
+const SESSION_CAPABILITIES = {
+  notices: {},
+  compaction: {},
+  configOptions: { boolean: {} },
+} as const
 const TERMINAL_CAPABILITIES = { terminal: true } as const
 const ELICITATION_CAPABILITIES = { form: {}, url: {} } as const
 

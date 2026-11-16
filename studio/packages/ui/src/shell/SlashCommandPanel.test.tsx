@@ -142,9 +142,29 @@ describe('SlashCommandPanelBody', () => {
     expect(render('sessions', { sessions: [] })).toContain('No saved sessions')
   })
 
-  test('/mcp says the server list is not available instead of faking one', () => {
+  test('/mcp lists attached servers with their status and errors', () => {
+    const html = render('mcp', {
+      status: {
+        ...data.status!,
+        mcpServers: [
+          { name: 'filesystem', status: 'approved' },
+          { name: 'github', status: 'error', error: 'token expired' },
+          { name: 'postgres', status: 'pending' },
+        ],
+      },
+    })
+    expect(html).toContain('filesystem')
+    expect(html).toContain('approved')
+    expect(html).toContain('github')
+    expect(html).toContain('error')
+    expect(html).toContain('token expired')
+    expect(html).toContain('postgres')
+    expect(html).toContain('pending')
+  })
+
+  test('/mcp explains when no servers are attached', () => {
     const html = render('mcp')
-    expect(html).toContain('not available in Studio yet')
+    expect(html).toContain('No MCP servers are attached to this session.')
   })
 })
 

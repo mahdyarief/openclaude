@@ -447,6 +447,51 @@ infrastruktur pengujian, bukan regresi M5):
   `src/tools/FileReadTool/prompt.vision.test.ts:138` (1) — seluruhnya baris pra-ada, tidak
   ada temuan pada file M5. `bun test ./scripts/pr-intent-scan.test.ts` → **13 pass**.
 
+### M5.1 — Paritas rendering 1:1 (M5 lanjutan)
+
+- [x] Klien mengiklankan `session.configOptions.boolean` — boolean option kini benar-benar
+      didukung sesuai `ClientSessionCapabilities` ACP v1, sebelumnya hanya `notices` dan
+      `compaction` yang diiklankan.
+- [x] `notice` dirender di Studio (bukan lagi tersimpan tanpa tampilan).
+- [x] `plan` dirender di Studio (entri dengan prioritas dan status).
+- [x] `compaction_update` dirender di Studio (status, ringkasan, error).
+- [x] `config_option_update` dan `session_info_update` dipakai di UI (judul dan opsi).
+- [x] Panel MCP memakai `status.mcpServers` alih-alih placeholder "belum tersedia".
+
+Latar: audit terhadap `src/entrypoints/acp.ts` menunjukkan server sudah memancarkan kelima
+jenis update (`available_commands_update`, `usage_update`, `current_mode_update`,
+`config_option_update`, `session_info_update`, `notice`, `compaction_update`,
+`compaction_summary_chunk`, `plan`), dan reducer `packages/acp/src/updates.ts` sudah
+menyimpannya di `SessionState`. Kesenjangan sisanya murni rendering Plus iklan capability
+boolean yang belum ada di `packages/acp/src/connection.ts`.
+
+**Catatan implementasi:**
+
+- `emitUpdate` di `acp.ts:921–933` menggating `compaction_update`/`compaction_summary_chunk`
+  pada `supportsCompaction` dan `notice` pada `supportsNotices`; keduanya sudah diiklankan
+  klien. `config_option_update` tidak digating.
+- komponen tampilan baru memakai komposisi primitive shadcn/beautifui dan token tema saja,
+  sesuai `studio/AGENTS.md`; tidak ada kontrol interaktif buatan sendiri.
+
+**Verifikasi M5.1** (lihat bagian M5 untuk konvensi perintah):
+
+- `corepack pnpm --filter @openclaude-studio/acp exec vitest run test/connection.test.ts`
+  → `EXIT=0`, 11 test hijau, termasuk probe capability yang memastikan
+  `session: { notices: {}, compaction: {}, configOptions: { boolean: {} } }`.
+- `corepack pnpm -r typecheck` (dari `studio/`) → `acp`, `bridge`, `ui`, `web` Done, `EXIT=0`.
+- `corepack pnpm exec vitest run` (dari `studio/`) → 32 file / **249 test** hijau, `EXIT=0`;
+  mencakup test baru `SessionActivity` (9), `ChatPane` (2), dan `/mcp` (16).
+- `corepack pnpm -r build` (dari `studio/`) → Done, `EXIT=0`.
+- `bun run typecheck` dan `bun run check` (dari root repo) → `EXIT=0`; `check` mencakup
+  smoke, deadcode, build CLI/SDK/ACP/Studio, dan `test:full`.
+- `bun run security:pr-scan -- --base FETCH_HEAD --head HEAD` → `EXIT=0`, 0 high / 1 medium.
+  Satu medium (`scripts/build.ts:1112`, `COREPACK_ENABLE_DOWNLOAD_PROMPT`) berasal dari
+  commit lama `4cccb2ff` (2026-11-03), tidak ada di `FETCH_HEAD` upstream, dan bukan
+  baris yang ditambahkan M5.1 — jadi bukan regresi paritas.
+
+Dengan ini paritas 1:1 untuk semua kemampuan yang punya representasi ACP v1 tercapai;
+native/voice/computer-use dan flag mati tetap terminal-only sesuai D1 (lihat M6).
+
 ### M6 — Build & deploy
 
 - [ ] Stub native **khusus bundle ACP** (`scripts/build.ts:991–1029`, hanya dipakai di

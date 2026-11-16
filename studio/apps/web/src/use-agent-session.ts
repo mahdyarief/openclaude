@@ -118,6 +118,10 @@ type AgentSession = {
    * unsubscribe function.
    */
   onStatus: (callback: (snapshot: AgentStatusSnapshot) => void) => () => void
+  /** Clear the current session notice. */
+  dismissNotice: () => void
+  /** Update a configurable session option over the live connection. */
+  setConfigOption: (configId: string, value: string | boolean) => Promise<void>
   /** Typed ACP session/auth methods from the current handshake or connection. */
   sessions: AgentSessionMethods | null
   /** MCP servers attached to the current session and their approval state. */
@@ -755,6 +759,29 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
     )
   }, [])
 
+  /** Clear the current session notice; mirrors the store mutation locally. */
+  const dismissNotice = useCallback(() => {
+    const store = storeRef.current
+    if (!store) return
+    store.dismissNotice()
+    setState(store.getState())
+  }, [])
+
+  /** Send a session config change over the live connection, if one exists. */
+  const setConfigOption = useCallback(
+    async (configId: string, value: string | boolean) => {
+      const sessionId = sessionIdRef.current
+      const handle = handleRef.current
+      if (!sessionId || !handle?.setConfigOption) return
+      await handle.setConfigOption({
+        sessionId,
+        configId,
+        ...(typeof value === 'boolean' ? { type: 'boolean' as const, value } : { value }),
+      })
+    },
+    [],
+  )
+
   return {
     state,
     status,
@@ -776,6 +803,8 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
     setConfig,
     getStatus,
     onStatus,
+    dismissNotice,
+    setConfigOption,
     sessions: handshakeRef.current ?? handleRef.current,
     mcpServers: (handshakeRef.current ?? handleRef.current)?.mcpServers ?? [],
     remoteSessionList,
