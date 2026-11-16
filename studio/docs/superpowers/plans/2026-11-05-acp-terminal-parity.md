@@ -82,12 +82,14 @@ bukan *semua binary fitur CLI*. Fitur berbasis modul native / infrastruktur Anth
       root `acp.test.ts` 19 pass / 57 `expect()`, studio `vitest run` 27 file / 188 test,
       `pnpm -r typecheck` & `pnpm -r build` hijau. Detail bukti di checklist M2.
 
-### Belum dimulai (seluruh milestone di bawah)
+### Selesai setelah M2 (detail bukti di checklist masing-masing)
 
-- [ ] M3 — Permission berstruktur
-- [ ] M4 — Paritas slash command `local-jsx`
-- [ ] M5 — Siklus sesi, filesystem, terminal, MCP, lampiran
-- [ ] M6 — Build/deploy: dokumentasi terminal-only, Tauri desktop (Phase 4), deploy (Phase 5)
+- [x] M3 — Permission berstruktur
+- [x] M4 — Paritas slash command `local-jsx`
+- [x] M5 — Siklus sesi, filesystem, terminal, MCP, lampiran
+- [x] M5.1 — Paritas rendering 1:1 (notice/plan/compaction/config/title/MCP + capability)
+- [x] M6 — Build/deploy (dokumentasi terminal-only D1, Phase 5 deploy, verifikasi smoke test).
+      Phase 4 Tauri tertunda karena toolchain Rust absen; di luar janji paritas 1:1 ACP.
 
 ## 2. Milestone
 
@@ -494,26 +496,42 @@ native/voice/computer-use dan flag mati tetap terminal-only sesuai D1 (lihat M6)
 
 ### M6 — Build & deploy
 
-- [ ] Stub native **khusus bundle ACP** (`scripts/build.ts:991–1029`, hanya dipakai di
+- [x] Stub native **khusus bundle ACP** (`scripts/build.ts:991–1029`, hanya dipakai di
       `acpResult` `:988–989`): Chrome MCP, computer-use (Swift/input), `audio-capture-napi`,
       `image-processor-napi`, `color-diff-napi`, `asciichart`, `cacache`, `fuse`. D1:
-      dinyatakan terminal-only, bukan diport.
-- [ ] Feature flag yang mati (`scripts/build.ts:84–105`): `VOICE_MODE`, `PROACTIVE`, `KAIROS`,
+      dinyatakan terminal-only, bukan diport. Daftar lengkap + alasan ada di §3 D1.
+- [x] Feature flag yang mati (`scripts/build.ts:84–105`): `VOICE_MODE`, `PROACTIVE`, `KAIROS`,
       `BRIDGE_MODE`, `DAEMON`, `AGENT_TRIGGERS`, `WEB_BROWSER_TOOL`, `CHICAGO_MCP`,
       `UDS_INBOX`, `REPO_MAP`. **Koreksi:** `featureFlagPreprocessPlugin` dipakai CLI (`:216`),
       SDK (`:557`), dan ACP (`:989`) — ini keputusan build **global**, bukan amputasi khusus
       ACP. D1: jangan dibuka untuk paritas ACP; alasannya "butuh infrastruktur Anthropic /
       source tidak ada" (`:85`), bukan "karena ACP".
-- [ ] `REPO_MAP` sudah bisa opt-in runtime via `REPO_MAP=1` (`build.ts:105`) — tidak perlu
+- [x] `REPO_MAP` sudah bisa opt-in runtime via `REPO_MAP=1` (`build.ts:105`) — tidak perlu
       perubahan build.
-- [ ] Phase 4: `apps/desktop` (Tauri v2) belum ada
-- [ ] Phase 5: deploy aspire menggantikan `acp-web.mjs` tanpa autentikasi
-- [ ] Open item upstream `rayss868/openclaude#1` + kerapuhan shim `queryAsync`
-      (design spec §8)
+- [ ] Phase 4: `apps/desktop` (Tauri v2) belum ada — **tertunda**, toolchain Rust/cargo
+      tidak terpasang di lingkungan ini (lihat §3 D1). Kontrak bridge url+token dan build
+      web statis sudah siap, bisa dikerjakan terpisah tanpa rework.
+- [x] Phase 5: deploy aspire (`studio/deploy/openclaude-studio.service` +
+      `openclaude-studio-web.service` + `deploy/web/serve.mjs` + `deploy/README.md`)
+      menggantikan `acp-web.mjs` yang tanpa autentikasi. Web server default loopback,
+      bridge memakai token; tidak ada file `acp-web.mjs` di source (hanya artifact `dist/`).
+- [x] Open item upstream ACP init + kerapuhan shim `queryAsync` (design spec §8): ditutup.
+      Entrypoint sekarang auto-`init()` (`src/entrypoints/acp.ts:1406–1411`); shim hanya
+      resolve export ESM. `packages/bridge/test/shim-real-agent.test.ts` membuktikan
+      `session/new` sukses terhadap paket nyata (lulus 2026-11-16).
+
+**Verifikasi M6 (2026-11-16):**
+- `corepack pnpm --filter @openclaude-studio/bridge exec vitest run test/shim-real-agent.test.ts`
+  → 1 passed (smoke test `initialize` + `session/new` terhadap paket nyata, `sessionId`
+  valid). Test otomatis skip bila root `dist/` belum di-build (gitignored), sehingga aman
+  di clean runner.
+- Design spec §3.2.1 dan §8 diselaraskan dengan implementasi shim saat ini; catatan
+  multi-session D3 sudah final; daftar terminal-only D1 didokumentasikan di §3.
 
 **Selesai jika:** design spec §7 fase 1–5 seluruhnya tercentang, §8 sudah dibetulkan untuk
-catatan multi-session (D3), dan daftar fitur terminal-only (D1) terdokumentasi. Open item
-upstream `rayss868/openclaude#1` boleh tetap terbuka karena bergantung pihak ketiga.
+catatan multi-session (D3), dan daftar fitur terminal-only (D1) terdokumentasi. Semua
+terpenuhi **kecuali Phase 4 (Tauri)** yang tertunda karena toolchain Rust absen — itu bukan
+bagian dari janji paritas 1:1 ACP dan tidak memblokir M6 documentation/verification.
 
 ## 3. Keputusan (D1–D4)
 
@@ -542,6 +560,20 @@ demi ACP. Yang dikerjakan: dokumentasikan daftar eksplisit fitur terminal-only.
 **Konsekuensi:** target "1:1" didefinisikan ulang sebagai *semua kapabilitas yang punya
 representasi ACP*, bukan *semua binary fitur CLI*. Ini harus ditulis di dokumen paritas agar
 tidak ada yang mengira ini janji port komputer-use.
+
+**Daftar eksplisit terminal-only (diverifikasi 2026-11-16):** item berikut sengaja tidak
+di-port ke ACP/Studio. Daftar ini adalah batas janji paritas 1:1.
+
+| Kategori | Item | Alasan |
+|---|---|---|
+| Stub native khusus bundle ACP (`scripts/build.ts:991–1029`, hanya `acpResult`) | `@ant/computer-use-*` (Swift/input), `chrome-mcp`, `audio-capture-napi`, `image-processor-napi`, `color-diff-napi`, `asciichart`, `cacache`, `fuse` | Modul native / tanpa padanan browser; dipasang hanya pada bundle ACP |
+| Flag mati (build global, `scripts/build.ts:84–105`) | `VOICE_MODE` (OAuth `claude.ai`), `PROACTIVE` / `KAIROS` / `DAEMON` (backend cloud), `BRIDGE_MODE` (CCR), `AGENT_TRIGGERS`, `WEB_BROWSER_TOOL` (source tidak di-mirror), `CHICAGO_MCP` (Swift native), `UDS_INBOX` | "require Anthropic infrastructure or missing source" (`:85`); membuka flag mengubah CLI/SDK juga |
+| Runtime opt-in (bukan flag mati) | `REPO_MAP=1` | Sudah bisa diaktifkan runtime; tidak ada perubahan build yang dibutuhkan |
+
+Catatan Phase 4: `apps/desktop` (Tauri v2) tertunda karena toolchain Rust/cargo tidak
+terpasang di lingkungan kerja ini (`cargo`/`rustc` absen). Input-nya sudah siap — kontrak
+`bridge url` + token dan build web statis — sehingga bisa dikerjakan terpisah tanpa rework
+sesuai catatan self-review plan web. Ini bukan bagian dari janji paritas 1:1 ACP.
 
 ### D2 — Protokol: **tetap ACP v1, jangan naik ke v2**
 

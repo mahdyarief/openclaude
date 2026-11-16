@@ -132,30 +132,24 @@ export function startBridge(options?: BridgeOptions): Promise<{
 
 #### 3.2.1 Agent shim (replaces patching the bundle)
 
-`dist/acp.mjs` never calls `init()`, so `session/new` throws `Config accessed before allowed`.
-The SDK does expose `queryAsync`, which awaits `init()` internally before doing any model
-work. Verified on the installed `0.33.3-by-rayss`:
+Older `dist/acp.mjs` builds never called `init()`, so `session/new` threw
+`Config accessed before allowed`. The entrypoint now calls `init()` itself on the first
+JSON-RPC message, via `runOutsideSdkContext(init)` (`src/entrypoints/acp.ts:1406–1411`).
+Verified on 2026-11-16 against the real package: sending `initialize` followed by
+`session/new` to the shim returns a real `sessionId` with no warm-up and no bundle patch.
 
-- `unstable_v2_createSession()` fails with the config error before init.
-- `queryAsync({ prompt: '', options: { cwd, abortController: aborted } })` returns in ~42 ms
-  and performs no network call, because the abort fires first.
-- After that call, `unstable_v2_createSession()` succeeds.
-
-So the bridge ships a small shim and never edits installed files:
+The bridge therefore ships a minimal shim that only resolves the ESM-only export map and
+imports the ACP entry (it auto-starts the stdio server):
 
 ```js
-import { queryAsync } from '@rayss-dev/openclaude/sdk'
-
-const abort = new AbortController()
-abort.abort()
-await queryAsync({ prompt: '', options: { cwd: process.cwd(), abortController: abort } })
-await import('@rayss-dev/openclaude/acp') // entry auto-starts on import
+const acpPath = process.env.OPENCLAUDE_ACP_ENTRY ?? resolveEntry('@rayss-dev/openclaude/acp')
+await import(acpPath)
 ```
 
-Importing `@rayss-dev/openclaude/acp` auto-starts the server, confirmed by sending one
-`initialize` and receiving exactly one response. The shim is the documented workaround until
-rayss868/openclaude#1 merges; once it does, the shim reduces to a plain import and the
-`queryAsync` call can be deleted.
+The shim exists to centralise entry resolution and keep the option of an environment
+override. The integration test `packages/bridge/test/shim-real-agent.test.ts` asserts that
+`session/new` succeeds against the real package, so a future upstream regression in
+`init()` cannot pass silently.
 
 ### 3.3 `packages/acp`
 
@@ -235,22 +229,28 @@ Responsibility: render state. No protocol knowledge.
 
 ## 7. Phases
 
-1. `packages/acp` + `packages/bridge` with the fake-agent integration test.
-2. Web shell and one end-to-end session against the real agent.
-3. Tool calls, permissions, diff view.
-4. Tauri desktop.
-5. Deploy on aspire, replacing the current unauthenticated `acp-web.mjs` service.
+Status verified 2026-11-16; evidence lives in
+`studio/docs/superpowers/plans/2026-11-05-acp-terminal-parity.md`.
+
+1. [x] `packages/acp` + `packages/bridge` with the fake-agent integration test.
+2. [x] Web shell and one end-to-end session against the real agent.
+3. [x] Tool calls, permissions, diff view (M2/M5).
+4. [ ] Tauri desktop — deferred: Rust/cargo toolchain absent in the working environment.
+   Inputs are ready (bridge url + token, static web build) and it needs no rework; it is
+   outside the ACP 1:1 parity promise.
+5. [x] Deploy on aspire (`studio/deploy/`: two systemd units, `serve.mjs`, README),
+   replacing the current unauthenticated `acp-web.mjs` service.
 
 ## 8. Open items
 
-- The upstream ACP fix (rayss868/openclaude#1) is still open. Verified: `0.33.3-by-rayss`
-  still ends `dist/acp.mjs` with a bare `createAcpServer()` inside the main guard. The
-  `queryAsync` shim in 3.2.1 removes the need to patch the installed bundle; the aspire
-  install should be restored from `acp.mjs.bak` once the bridge is in use, so it matches the
-  published package exactly.
-- The shim is a workaround, not a fix. If upstream changes `queryAsync` to skip `init()` when
-  the prompt is empty or aborted, the shim breaks silently. The integration test must assert
-  that `session/new` succeeds against the real package, not just against a fake agent.
+- The upstream ACP init issue is resolved in the installed build: `src/entrypoints/acp.ts:1406–1411` calls `runOutsideSdkContext(init)` on
+  the first JSON-RPC message. The bridge shim only resolves the ESM-only export map and
+  imports the entry; no installed file is patched. Verified 2026-11-16 by driving
+  `initialize` + `session/new` against the real package.
+- The integration test `packages/bridge/test/shim-real-agent.test.ts` asserts `session/new`
+  returns a real `sessionId` against the real package. It skips on a clean checkout where
+  the gitignored root `dist/` has not been built, so it cannot mask an `init()` regression
+  in CI runs that build first.
 - The bridge supports multiple concurrent sessions per agent process. One process can
   serve one connection while owning a map of independently addressable sessions; this
   is a settled decision (D3), not an open question.
