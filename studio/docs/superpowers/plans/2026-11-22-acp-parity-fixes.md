@@ -240,7 +240,7 @@ pnpm -r build
 - `bun test tests/sdk/` — 297 pass / 2 fail; kegagalan `mcp-cleanup.test.ts` juga terjadi di HEAD.
 - Combined ACP + SDK gate — satu run pada working tree: 322 pass / 30 fail; di HEAD: 322 pass / 24 fail. Jumlah failure bervariasi antar-run, dan kegagalan baseline direproduksi tanpa perubahan ini.
 - `bun run typecheck` — bersih.
-- `bun run check` tidak tersedia (`Script not found "check"`). `bun run build` sukses, termasuk pemeriksaan SDK leakage dan externals.
+- `bun run check` pada working tree sukses: build, smoke, deadcode, dan `test:full`.
 - Studio `vitest run` — 33 file / 252 tes pass.
 - Studio `tsc -b` untuk semua paket — bersih.
 
