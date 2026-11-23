@@ -166,6 +166,26 @@ describe('createAgentConnection session selection', () => {
     expect(newParams.cwd).toBe('/work')
     expect(handle.sessionId).toBe('fresh-session')
   })
+
+  it('advertises boolean and select config-options support in the handshake', async () => {
+    let initializeParams: any
+    const app = makeFakeAgent({ onInitialize: (p) => (initializeParams = p) })
+
+    const { createAgentConnection } = await import('../src/connection.js')
+    const promise = createAgentConnection({
+      url: 'ws://localhost:1234/acp',
+      token: 'secret',
+      cwd: '/work',
+      onUpdate: () => {},
+      onPermission: async () => CANCELLED_PERMISSION,
+    })
+    connectFakeAgent(app)
+    await promise
+
+    const configOptions = initializeParams.clientCapabilities.session.configOptions
+    expect(configOptions.boolean).toEqual({})
+    expect(configOptions._meta).toEqual({ select: {} })
+  })
 })
 
 describe('connectHandshake defers session creation', () => {
@@ -283,7 +303,7 @@ describe('ACP client capabilities and forwarded requests', () => {
     return app
   }
 
-  it('advertises real fs, terminal and elicitation handlers and scopes fs to cwd', async () => {
+  it('advertises real fs and terminal handlers, no elicitation, and scopes fs to cwd', async () => {
     // The shared /file HTTP seam is authenticated and root-scoped. A temporary
     // bridge rooted at the workspace makes the ACP fs handlers exercise the
     // same seam used by the file explorer.
@@ -314,9 +334,9 @@ describe('ACP client capabilities and forwarded requests', () => {
       expect(capabilities).toMatchObject({
         fs: { readTextFile: true, writeTextFile: true },
         terminal: true,
-        elicitation: { form: {}, url: {} },
         session: { notices: {}, compaction: {}, configOptions: { boolean: {} } },
       })
+      expect(capabilities.elicitation).toBeUndefined()
       expect(results['fs/read_text_file']).toEqual({ content: 'original' })
       expect(results['fs/write_text_file']).toEqual({})
       expect(readFileSync(join(root, 'note.txt'), 'utf8')).toBe('changed')
@@ -363,6 +383,44 @@ describe('ACP client capabilities and forwarded requests', () => {
       expect(await handle.resumeSession({ sessionId: 's1', cwd: root })).toEqual({ sessionId: 's1', _meta: null })
       expect(await handle.deleteSession({ sessionId: 's1' })).toEqual({ _meta: null })
       expect(await handle.closeSession({ sessionId: 's1' })).toEqual({ _meta: null })
+    } finally {
+      handle?.disconnect()
+      await bridge.close()
+    }
+  })
+
+  it('injects MCP servers into pushed status_update snapshots', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'studio-acp-'))
+    const bridge = await startBridge({ cwd: root, token: 'secret' })
+    const app = makeFakeAgent({
+      afterNew: async ctx => {
+        await ctx.client.notify('openclaude/status_update', {
+          sessionId: 'fresh-session',
+          status: { model: 'test-model' },
+        })
+      },
+    })
+    const statuses: Array<Record<string, unknown>> = []
+    let handle: Awaited<ReturnType<typeof import('../src/connection.js').createAgentConnection>> | undefined
+    try {
+      const { createAgentConnection } = await import('../src/connection.js')
+      const promise = createAgentConnection({
+        url: bridge.url,
+        token: bridge.token,
+        cwd: root,
+        onUpdate: () => {},
+        onPermission: async () => CANCELLED_PERMISSION,
+        onStatus: snapshot => statuses.push(snapshot as Record<string, unknown>),
+        mcpServers: [{ name: 'docs', type: 'http', url: 'https://docs.invalid/mcp', headers: [] }],
+      })
+      connectFakeAgent(app)
+      handle = await promise
+      expect(statuses).toContainEqual(
+        expect.objectContaining({
+          model: 'test-model',
+          mcpServers: [{ name: 'docs', status: 'approved' }],
+        }),
+      )
     } finally {
       handle?.disconnect()
       await bridge.close()

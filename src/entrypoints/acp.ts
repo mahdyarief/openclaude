@@ -5,6 +5,7 @@ import {
   unstable_v2_resumeSession,
   type SDKSession,
 } from './sdk/v2.js'
+import { forkSession, listSessions } from './sdk/sessions.js'
 import type {
   QueryPermissionMode,
   SDKPermissionRequestMessage,
@@ -273,6 +274,10 @@ type SessionState = {
   mode: string
   session: SDKSession
   active: Promise<void> | null
+  /** Set when the client cancels an in-flight prompt; the prompt reply reports it. */
+  cancelled: boolean
+  /** Pending session/request_permission frames owned by this session. */
+  pendingPermissionIds: Set<JsonRpcId>
   statusUnsubscribe?: () => void
 }
 
@@ -875,7 +880,7 @@ export function createAcpServer(
    * raw optionId. This normalizes whatever the client sends so a rejected
    * response never falls through as a silent deny.
    */
-  function resolvePermission(result: unknown): PermissionResult {
+  function resolvePermission(result: unknown, toolName?: string): PermissionResult {
     const payload = isRecord(result) ? result : {}
     const outcome = isRecord(payload.outcome) ? payload.outcome : {}
     const optionId = typeof outcome.optionId === 'string' ? outcome.optionId : null
@@ -901,6 +906,29 @@ export function createAcpServer(
       return {
         behavior: 'allow',
         decisionClassification: 'user_permanent',
+        updatedPermissions: [
+          {
+            type: 'addRules',
+            behavior: 'allow',
+            destination: 'localSettings',
+            rules: [{ toolName: toolName ?? '*' }],
+          },
+        ],
+      }
+    }
+    if (outcome.outcome === 'selected' && optionId === 'reject_always') {
+      return {
+        behavior: 'deny',
+        message: 'Permission permanently denied by ACP client',
+        decisionClassification: 'user_reject',
+        updatedPermissions: [
+          {
+            type: 'addRules',
+            behavior: 'deny',
+            destination: 'localSettings',
+            rules: [{ toolName: toolName ?? '*' }],
+          },
+        ],
       }
     }
     return {
@@ -1031,14 +1059,23 @@ export function createAcpServer(
     return promise
   }
 
-  const requestPermission = (
-    sessionId: string,
-    session: SDKSession,
-    message: SDKPermissionRequestMessage,
-  ): void => {
+  /** Forget permission requests still waiting on the client for this session. */
+  const dropPendingPermissions = (state: SessionState): void => {
+    for (const id of state.pendingPermissionIds) {
+      pendingRequests.delete(id)
+    }
+    state.pendingPermissionIds.clear()
+  }
+
+  const requestPermission = (state: SessionState, message: SDKPermissionRequestMessage): void => {
     const id = nextRequestId++
+    state.pendingPermissionIds.add(id)
     pendingRequests.set(id, result => {
-      session.respondToPermission(message.tool_use_id, resolvePermission(result))
+      state.pendingPermissionIds.delete(id)
+      state.session.respondToPermission(
+        message.tool_use_id,
+        resolvePermission(result, message.tool_name),
+      )
     })
 
     const inputs = message.input ?? {}
@@ -1068,7 +1105,7 @@ export function createAcpServer(
       id,
       method: 'session/request_permission',
       params: {
-        sessionId,
+        sessionId: state.session.sessionId,
         toolCall: {
           toolCallId: message.tool_use_id,
           title: message.tool_name,
@@ -1101,6 +1138,34 @@ export function createAcpServer(
     }
   }
 
+  const openStoredSession = async (sessionId: string, cwd: string, mode: string): Promise<void> => {
+    const mcpServers = await loadMcpServers()
+    const state: SessionState = {
+      cwd,
+      mode,
+      session: undefined as unknown as SDKSession,
+      active: null,
+      cancelled: false,
+      pendingPermissionIds: new Set(),
+    }
+    sessions.set(sessionId, state)
+    const onPermissionRequest = (permission: SDKPermissionRequestMessage): void => {
+      requestPermission(state, permission)
+    }
+    const session = await unstable_v2_resumeSession(sessionId, {
+      cwd,
+      permissionMode: mode as Parameters<typeof unstable_v2_resumeSession>[1]['permissionMode'],
+      allowDangerouslySkipPermissions: mode === 'bypassPermissions' || mode === 'fullAccess',
+      mcpServers,
+      onPermissionRequest,
+    })
+    state.session = session
+    replayHistory(sessionId, session)
+    void advertiseCommands(sessionId, cwd)
+    emitUpdate(sessionId, configOptionsUpdate())
+    subscribeSessionStatus(sessions.get(sessionId)!)
+  }
+
   const loadSession = async (message: JsonRpcRequest): Promise<void> => {
     const sessionId = typeof message.params?.sessionId === 'string' ? message.params.sessionId : ''
     const cwd = typeof message.params?.cwd === 'string' ? message.params.cwd : process.cwd()
@@ -1108,25 +1173,8 @@ export function createAcpServer(
       if (message.id !== undefined) fail(message.id, -32602, `${message.method} requires sessionId`)
       return
     }
-    const mode = resolveSessionPermissionMode(message.params)
-    const mcpServers = await loadMcpServers()
-    let session: SDKSession
-    const onPermissionRequest = (permission: SDKPermissionRequestMessage): void => {
-      requestPermission(session.sessionId, session, permission)
-    }
-    session = await unstable_v2_resumeSession(sessionId, {
-      cwd,
-      permissionMode: mode as Parameters<typeof unstable_v2_resumeSession>[1]['permissionMode'],
-      allowDangerouslySkipPermissions: mode === 'bypassPermissions' || mode === 'fullAccess',
-      mcpServers,
-      onPermissionRequest,
-    })
-    sessions.set(sessionId, { cwd, mode, session, active: null })
+    await openStoredSession(sessionId, cwd, resolveSessionPermissionMode(message.params))
     if (message.id !== undefined) respond(message.id, { sessionId })
-    replayHistory(sessionId, session)
-    void advertiseCommands(sessionId, cwd)
-    emitUpdate(sessionId, configOptionsUpdate())
-    subscribeSessionStatus(sessions.get(sessionId)!)
   }
 
   const closeSession = async (message: JsonRpcRequest): Promise<void> => {
@@ -1136,6 +1184,7 @@ export function createAcpServer(
       if (message.id !== undefined) fail(message.id, -32004, `Unknown session: ${sessionId}`)
       return
     }
+    dropPendingPermissions(state)
     await state.session.close()
     state.statusUnsubscribe?.()
     sessions.delete(sessionId)
@@ -1186,7 +1235,7 @@ export function createAcpServer(
       const mcpServers = await loadMcpServers()
       let session: SDKSession
       const onPermissionRequest = (permission: SDKPermissionRequestMessage): void => {
-        requestPermission(session.sessionId, session, permission)
+        requestPermission(sessions.get(session.sessionId)!, permission)
       }
       session = unstable_v2_createSession({
         cwd,
@@ -1198,7 +1247,14 @@ export function createAcpServer(
         mcpServers,
         onPermissionRequest,
       })
-      sessions.set(session.sessionId, { cwd, mode, session, active: null })
+      sessions.set(session.sessionId, {
+        cwd,
+        mode,
+        session,
+        active: null,
+        cancelled: false,
+        pendingPermissionIds: new Set(),
+      })
       if (message.id !== undefined) respond(message.id, { sessionId: session.sessionId })
       // Advertise after the response so the client has adopted the session
       // store by the time the command list lands.
@@ -1213,7 +1269,13 @@ export function createAcpServer(
     'session/cancel'(message) {
       const sessionId = typeof message.params?.sessionId === 'string' ? message.params.sessionId : ''
       const state = sessions.get(sessionId)
-      if (state) state.session.interrupt()
+      if (state) {
+        // Mark the turn so the prompt reply reports `cancelled`, and drop any
+        // permission request the client may still be rendering.
+        if (state.active) state.cancelled = true
+        dropPendingPermissions(state)
+        state.session.interrupt()
+      }
       if (message.id !== undefined) respond(message.id, {})
     },
 
@@ -1229,6 +1291,7 @@ export function createAcpServer(
         return
       }
 
+      state.cancelled = false
       state.active = (async () => {
         try {
           const content = await contentBlocksFromPrompt(
@@ -1277,7 +1340,9 @@ export function createAcpServer(
               emitUpdate(sessionId, update)
             }
           }
-          if (message.id !== undefined) respond(message.id, { stopReason: 'end_turn' })
+          if (message.id !== undefined) {
+            respond(message.id, { stopReason: state.cancelled ? 'cancelled' : 'end_turn' })
+          }
         } catch (error) {
           if (message.id !== undefined) {
             fail(message.id, -32000, error instanceof Error ? error.message : String(error))
@@ -1315,11 +1380,35 @@ export function createAcpServer(
       if (message.id !== undefined) respond(message.id, {})
     },
 
-    'session/list'(message) {
+    'session/list': async message => {
       if (message.id === undefined) return
-      respond(message.id, {
-        sessions: Array.from(sessions, ([sessionId, state]) => ({ sessionId, cwd: state.cwd })),
+      const dir = typeof message.params?.cwd === 'string' ? message.params.cwd : undefined
+      const merged = new Map<string, { sessionId: string; cwd?: string; title?: string; updatedAt?: string }>()
+      try {
+        const stored = await listSessions(dir ? { dir } : {})
+        for (const info of stored) {
+          merged.set(info.sessionId, {
+            sessionId: info.sessionId,
+            ...(info.cwd || dir ? { cwd: info.cwd || dir } : {}),
+            ...(info.customTitle || info.summary || info.firstPrompt
+              ? { title: info.customTitle ?? info.summary ?? info.firstPrompt }
+              : {}),
+            ...(info.lastModified ? { updatedAt: new Date(info.lastModified).toISOString() } : {}),
+          })
+        }
+      } catch {
+        // Disk unreadable: the in-memory list is still worth answering with.
+      }
+      for (const [sessionId, state] of sessions) {
+        merged.set(sessionId, { sessionId, cwd: state.cwd })
+      }
+      const list = Array.from(merged.values()).sort((a, b) => {
+        if (a.updatedAt && b.updatedAt) return b.updatedAt.localeCompare(a.updatedAt)
+        if (a.updatedAt) return -1
+        if (b.updatedAt) return 1
+        return 0
       })
+      respond(message.id, { sessions: list })
     },
 
     'session/set_mode': async message => {
@@ -1360,25 +1449,23 @@ export function createAcpServer(
         if (message.id !== undefined) fail(message.id, -32004, `Unknown session: ${sessionId}`)
         return
       }
-      const mcpServers = await loadMcpServers()
-      let session: SDKSession
-      const onPermissionRequest = (permission: SDKPermissionRequestMessage): void => {
-        requestPermission(session.sessionId, session, permission)
+      // A half-written JSONL would produce a truncated fork, so refuse while
+      // the source turn is still running.
+      if (state.active) {
+        if (message.id !== undefined) fail(message.id, -32005, 'Source session is busy')
+        return
       }
-      session = unstable_v2_createSession({
-        cwd: state.cwd,
-        permissionMode: state.mode as Parameters<typeof unstable_v2_createSession>[0]['permissionMode'],
-        allowDangerouslySkipPermissions:
-          state.mode === 'bypassPermissions' || state.mode === 'fullAccess',
-        mcpServers,
-        onPermissionRequest,
-      })
-      const newId = session.sessionId
-      sessions.set(newId, { cwd: state.cwd, mode: state.mode, session, active: null })
-      if (message.id !== undefined) respond(message.id, { sessionId: newId })
-      void advertiseCommands(newId, state.cwd)
-      emitUpdate(newId, configOptionsUpdate())
-      subscribeSessionStatus(sessions.get(newId)!)
+      let forkId: string
+      try {
+        ;({ sessionId: forkId } = await forkSession(sessionId, { dir: state.cwd }))
+      } catch (error) {
+        if (message.id !== undefined) {
+          fail(message.id, -32004, error instanceof Error ? error.message : 'Fork failed')
+        }
+        return
+      }
+      await openStoredSession(forkId, state.cwd, state.mode)
+      if (message.id !== undefined) respond(message.id, { sessionId: forkId })
     },
 
     'fs/read_text_file': forwardFsRead,
@@ -1417,6 +1504,10 @@ export function createAcpServer(
       ? handlers[method]
       : undefined
     if (!handler) {
+      // A frame with an id but no method is a JSON-RPC *response*. If nothing
+      // is waiting for it (e.g. a permission answer that arrived after cancel),
+      // it is stale and must be ignored rather than answered with an error.
+      if (message.method === undefined || message.method === null) return
       if (message.id !== undefined) fail(message.id, -32601, `Method not found: ${message.method}`)
       return
     }

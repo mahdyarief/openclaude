@@ -262,6 +262,27 @@ type HandlerOptions = Pick<
 type ClientHandlers = {
   /** Mutations to this callback are observed by the registered status handler. */
   statusCallback: { current: ((snapshot: AgentStatusSnapshot) => void) | null }
+  /** Attached MCP servers, injected into pushed snapshots that omit them. */
+  mcpServers: Array<McpServer & McpServerStatus>
+}
+
+/**
+ * The server's status snapshot has no MCP field; only the pull-based
+ * `openclaude/status` response carries one. Attach the known servers so the
+ * pushed snapshot is as complete as the fetched one.
+ */
+function withMcpServers(
+  snapshot: AgentStatusSnapshot,
+  mcpServers: Array<McpServer & McpServerStatus>,
+): AgentStatusSnapshot {
+  return {
+    ...snapshot,
+    mcpServers: mcpServers.map(({ name, status, error }) => ({
+      name,
+      status,
+      ...(error ? { error } : {}),
+    })),
+  }
 }
 
 /**
@@ -276,11 +297,15 @@ const FS_CAPABILITIES = { readTextFile: true, writeTextFile: true } as const
 const SESSION_CAPABILITIES = {
   notices: {},
   compaction: {},
-  configOptions: { boolean: {} },
+  configOptions: {
+    boolean: {},
+    // ACP v1 has no standard `select` capability. The agent emits `select`
+    // options (model, thinking level), so advertise support through the
+    // protocol's extension point instead of silently exceeding the contract.
+    _meta: { select: {} },
+  },
 } as const
 const TERMINAL_CAPABILITIES = { terminal: true } as const
-const ELICITATION_CAPABILITIES = { form: {}, url: {} } as const
-
 function workspaceRoot(options: HandlerOptions): string {
   if (!options.cwd) throw new Error('workspace root is required for fs requests')
   return options.cwd
@@ -301,7 +326,7 @@ function registerHandlers(
       ({ params }) => {
         const cb = handlers.statusCallback.current ?? options.onStatus
         if (cb) {
-          cb(params.status)
+          cb(withMcpServers(params.status, handlers.mcpServers))
         }
       },
     )
@@ -337,7 +362,9 @@ function registerHandlers(
       terminalRequest<ReleaseTerminalResponse>(options.url, options.token, { action: 'release', ...params }),
     )
     .onRequest(CLIENT_METHODS.elicitation_create, async (_request: { params: CreateElicitationRequest }): Promise<CreateElicitationResponse> => {
-      // The server contract leaves elicitation UI for M6; cancelling is deterministic.
+      // No elicitation capability is advertised yet (no form/url dialog exists),
+      // so the agent should not call this; answering cancel keeps the contract
+      // deterministic if it does anyway.
       return { action: 'cancel' }
     })
 }
@@ -348,7 +375,6 @@ function initializeConnection(connection: ClientConnection): Promise<InitializeR
     clientCapabilities: {
       fs: { ...FS_CAPABILITIES },
       ...TERMINAL_CAPABILITIES,
-      elicitation: { ...ELICITATION_CAPABILITIES },
       session: { ...SESSION_CAPABILITIES },
     },
     clientInfo: { name: 'openclaude-studio', version: '0.0.0' },
@@ -401,11 +427,12 @@ export async function connectHandshake(
   > & Pick<Partial<AgentConnectionOptions>, 'cwd' | 'mcpServers'>,
 ): Promise<AgentHandshake> {
   const stream = createWebSocketStream(bridgeSocketUrl(options.url, options.token))
-  const handlers: ClientHandlers = { statusCallback: { current: null } }
+  const handlers: ClientHandlers = { statusCallback: { current: null }, mcpServers: [] }
   const app = registerHandlers(client({ name: 'openclaude-studio' }), options, handlers)
   const connection = app.connect(stream)
   const agentInfo = await initializeConnection(connection)
   const mcpServers = resolveMcpServers(options.mcpServers)
+  handlers.mcpServers = mcpServers
   const methods = sessionMethods(connection)
 
   return {
@@ -423,10 +450,8 @@ export async function connectHandshake(
       return sessionLike
     },
     fetchConfig: () => fetchConfig(connection),
-    fetchStatus: sessionId => fetchStatus(connection, sessionId).then(snapshot => ({
-      ...snapshot,
-      mcpServers: mcpServers.map(({ name, status, error }) => ({ name, status, ...(error ? { error } : {}) })),
-    })),
+    fetchStatus: sessionId =>
+      fetchStatus(connection, sessionId).then(snapshot => withMcpServers(snapshot, mcpServers)),
     patchConfig: patch => patchConfig(connection, patch),
     onStatus: callback => subscribeStatus(handlers, callback),
     mcpServers,
@@ -483,11 +508,12 @@ export async function createAgentConnection(
   options: AgentConnectionOptions,
 ): Promise<AgentConnectionHandle> {
   const stream = createWebSocketStream(bridgeSocketUrl(options.url, options.token))
-  const handlers: ClientHandlers = { statusCallback: { current: null } }
+  const handlers: ClientHandlers = { statusCallback: { current: null }, mcpServers: [] }
   const app = registerHandlers(client({ name: 'openclaude-studio' }), options, handlers)
   const connection = app.connect(stream)
   const agentInfo = await initializeConnection(connection)
   const mcpServers = resolveMcpServers(options.mcpServers)
+  handlers.mcpServers = mcpServers
   const methods = sessionMethods(connection)
 
   // When a sessionId is supplied, resume the existing session via `session/load`

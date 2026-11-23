@@ -14,6 +14,8 @@ import {
   getDefaultAppState,
   type AppState,
 } from '../../state/AppStateStore.js'
+import { applyPermissionUpdatesToLiveContext } from '../../utils/permissions/permissionSetup.js'
+import { persistPermissionUpdates } from '../../utils/permissions/PermissionUpdate.js'
 import { createStore, type Store } from '../../state/store.js'
 import {
   type ToolPermissionContext,
@@ -542,15 +544,39 @@ class SDKSessionImpl implements SDKSession {
       pending.resolve({
         behavior: 'allow',
         updatedInput: decision.updatedInput,
+        ...(decision.decisionClassification
+          ? { decisionClassification: decision.decisionClassification }
+          : {}),
       })
     } else {
       pending.resolve({
         behavior: 'deny',
         message: decision.message ?? 'Permission denied',
         decisionReason: { type: 'mode', mode: 'default' },
+        ...(decision.decisionClassification
+          ? { decisionClassification: decision.decisionClassification }
+          : {}),
       })
     }
     this.pendingPermissionPrompts.delete(toolUseId)
+
+    // "Always allow/deny" promises carry rules in `updatedPermissions`; the
+    // terminal applies them to the live context and persists them, so the SDK
+    // host must too or the promise silently does nothing.
+    const updates = decision.updatedPermissions
+    if (updates && updates.length > 0) {
+      const store = this._appStateStore
+      if (store) {
+        store.setState(prev => ({
+          ...prev,
+          toolPermissionContext: applyPermissionUpdatesToLiveContext(
+            prev.toolPermissionContext,
+            updates,
+          ),
+        }))
+      }
+      persistPermissionUpdates(updates)
+    }
   }
 }
 

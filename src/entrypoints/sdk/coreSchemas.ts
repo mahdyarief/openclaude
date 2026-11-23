@@ -342,6 +342,7 @@ export const PermissionResultSchema = lazySchema(() =>
     z.object({
       behavior: z.literal('deny'),
       message: z.string(),
+      updatedPermissions: z.array(PermissionUpdateSchema()).optional(),
       interrupt: z.boolean().optional(),
       toolUseID: z.string().optional(),
       decisionClassification:

@@ -6,6 +6,7 @@ type PermissionResult = {
   message?: string
   decisionClassification?: string
   updatedInput?: Record<string, unknown>
+  updatedPermissions?: Array<Record<string, unknown>>
 }
 
 const responded: Array<{ toolUseId: string; decision: PermissionResult }> = []
@@ -14,6 +15,11 @@ const closeCalls: Array<Promise<void>> = []
 const sentContents: unknown[] = []
 const modeCalls: string[] = []
 const configWrites: Array<{ id: string; value: unknown }> = []
+const forkFromCalls: string[] = []
+let interruptCalls = 0
+let holdPromptOpen = false
+let releasePrompt: (() => void) | null = null
+let listedSessions: Array<Record<string, unknown>> = []
 let configSettings: unknown[] = []
 let replayMessages: unknown[] = []
 let nextFakeSessionId = 0
@@ -29,7 +35,15 @@ const fakeSession = {
   sessionId: 'fake-session-id',
   sendMessage: async function* (content: unknown) {
     sentContents.push(content)
-    for (const message of promptMessages) yield message
+    for (const message of promptMessages) {
+      yield message
+      if (holdPromptOpen) {
+        // Simulates a turn still in flight so cancel can land mid-prompt.
+        await new Promise<void>(resolve => {
+          releasePrompt = resolve
+        })
+      }
+    }
   },
   getMessages: () => replayMessages,
   setPermissionMode: async (mode: string) => {
@@ -43,7 +57,9 @@ const fakeSession = {
     },
   }),
   subscribeAppState: () => () => {},
-  interrupt: () => {},
+  interrupt: () => {
+    interruptCalls++
+  },
   close: () => {
     // Simulates async MCP child cleanup; the server must await this.
     const p = new Promise<void>(resolve => setTimeout(resolve, 10))
@@ -74,6 +90,13 @@ mock.module('./sdk/v2.js', () => ({
   },
 }))
 mock.module('./init.js', () => ({ init: async () => {} }))
+mock.module('./sdk/sessions.js', () => ({
+  forkSession: async (sessionId: string) => {
+    forkFromCalls.push(sessionId)
+    return { sessionId: `new-session-${nextFakeSessionId++}` }
+  },
+  listSessions: async () => listedSessions,
+}))
 // `studioConfigSurface` pulls in bun:bundle feature() macros that the test
 // runner cannot transform, so supply a mutable registry instead.
 mock.module('../utils/studioConfigSurface.js', () => ({
@@ -265,6 +288,12 @@ describe('acp permission routing', () => {
     sentContents.length = 0
     modeCalls.length = 0
     configWrites.length = 0
+    forkFromCalls.length = 0
+    interruptCalls = 0
+    holdPromptOpen = false
+    releasePrompt?.()
+    releasePrompt = null
+    listedSessions = []
     configSettings = []
     replayMessages = []
     nextFakeSessionId = 0
@@ -337,7 +366,18 @@ describe('acp permission routing', () => {
     {
       optionId: 'allow_always',
       kind: 'allow_always',
-      decision: { behavior: 'allow', decisionClassification: 'user_permanent' },
+      decision: {
+        behavior: 'allow',
+        decisionClassification: 'user_permanent',
+        updatedPermissions: [
+          {
+            type: 'addRules',
+            behavior: 'allow',
+            destination: 'localSettings',
+            rules: [{ toolName: 'Edit' }],
+          },
+        ],
+      },
     },
     {
       optionId: 'reject',
@@ -353,8 +393,16 @@ describe('acp permission routing', () => {
       kind: 'reject_always',
       decision: {
         behavior: 'deny',
-        message: 'Permission denied by ACP client',
+        message: 'Permission permanently denied by ACP client',
         decisionClassification: 'user_reject',
+        updatedPermissions: [
+          {
+            type: 'addRules',
+            behavior: 'deny',
+            destination: 'localSettings',
+            rules: [{ toolName: 'Edit' }],
+          },
+        ],
       },
     },
   ]
@@ -469,6 +517,80 @@ describe('acp permission routing', () => {
           },
         },
       ])
+    } finally {
+      await h.close()
+    }
+  })
+
+  it('reports stopReason cancelled and drops a pending permission when the client cancels', async () => {
+    const h = createHarness()
+    try {
+      h.send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })
+      await h.waitFor(m => m.id === 1, 'initialize response')
+      h.send({ jsonrpc: '2.0', id: 2, method: 'session/new', params: { cwd: '/tmp' } })
+      await h.waitFor(m => m.id === 2, 'session/new response')
+
+      // Park a permission request so there is pending state to clean up.
+      permissionCallbacks[0]!({
+        type: 'permission_request',
+        request_id: 'req-1',
+        tool_name: 'Edit',
+        tool_use_id: 'tool-1',
+        input: { file_path: '/a.ts', old_string: 'a', new_string: 'b' },
+        uuid: 'uuid-1',
+        session_id: 'fake-session-id',
+      })
+      const request = await h.waitFor(
+        m => m.method === 'session/request_permission',
+        'permission request',
+      )
+
+      h.send({ jsonrpc: '2.0', id: 4, method: 'session/cancel', params: { sessionId: 'fake-session-id' } })
+      await h.waitFor(m => m.id === 4, 'session/cancel')
+      expect(interruptCalls).toBe(1)
+
+      // A late client answer after cancel must be ignored, not answered with
+      // an error frame.
+      h.send({
+        jsonrpc: '2.0',
+        id: request.id,
+        result: { outcome: { outcome: 'selected', optionId: 'allow' } },
+      })
+      await new Promise(resolve => setTimeout(resolve, 20))
+      expect(responded).toHaveLength(0)
+
+      // A prompt running while cancel lands must report `cancelled`, not
+      // `end_turn`.
+      holdPromptOpen = true
+      h.send({ jsonrpc: '2.0', id: 3, method: 'session/prompt', params: { sessionId: 'fake-session-id', prompt: [] } })
+      await h.waitFor(
+        m => m.method === 'session/update' && (m.params as any)?.update?.sessionUpdate === 'agent_message_chunk',
+        'agent_message_chunk',
+      )
+      h.send({ jsonrpc: '2.0', id: 5, method: 'session/cancel', params: { sessionId: 'fake-session-id' } })
+      await h.waitFor(m => m.id === 5, 'second session/cancel')
+      releasePrompt?.()
+      const prompted = await h.waitFor(m => m.id === 3, 'session/prompt response')
+      expect(prompted.result).toEqual({ stopReason: 'cancelled' })
+      holdPromptOpen = false
+    } finally {
+      holdPromptOpen = false
+      releasePrompt?.()
+      await h.close()
+    }
+  })
+
+  it('ignores a response frame with no matching pending request', async () => {
+    const h = createHarness()
+    try {
+      h.send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })
+      await h.waitFor(m => m.id === 1, 'initialize response')
+      h.send({ jsonrpc: '2.0', id: 999, result: { stale: true } })
+      await new Promise(resolve => setTimeout(resolve, 20))
+      const errors = h.output.filter(m => (m as { error?: unknown }).error)
+      expect(errors).toEqual([])
+      h.send({ jsonrpc: '2.0', id: 2, method: 'session/new', params: { cwd: '/tmp' } })
+      await h.waitFor(m => m.id === 2, 'session/new response')
     } finally {
       await h.close()
     }
@@ -797,7 +919,7 @@ describe('acp M1 JSON-RPC fixture', () => {
     } finally {
       await h.close()
     }
-  })
+  }, 5_000)
 
   it('gates compaction and notice behind advertised capabilities', async () => {
     const h = createHarness()
@@ -962,6 +1084,12 @@ describe('acp M5 session surface', () => {
     sentContents.length = 0
     modeCalls.length = 0
     configWrites.length = 0
+    forkFromCalls.length = 0
+    interruptCalls = 0
+    holdPromptOpen = false
+    releasePrompt?.()
+    releasePrompt = null
+    listedSessions = []
     configSettings = []
     replayMessages = []
     nextFakeSessionId = 0
@@ -1073,19 +1201,62 @@ describe('acp M5 session surface', () => {
     }
   })
 
-  it('forks into a new listed session without copying history', async () => {
+  it('forks into a new listed session and replays its history', async () => {
     const h = createHarness()
     try {
       await initialize(h)
       h.send({ jsonrpc: '2.0', id: 2, method: 'session/new', params: { cwd: '/tmp' } })
       await h.waitFor(m => m.id === 2, 'session/new')
-      nextFakeSessionId = 1
+      replayMessages = [
+        { type: 'user', message: { content: [{ type: 'text', text: 'forked question' }] } },
+      ]
       h.send({ jsonrpc: '2.0', id: 3, method: 'session/fork', params: { sessionId: 'fake-session-id' } })
       const forked = await h.waitFor(m => m.id === 3, 'session/fork')
-      expect((forked.result as any).sessionId).toBe('new-session-1')
+      expect((forked.result as any).sessionId).toBe('new-session-0')
+      expect(forkFromCalls).toEqual(['fake-session-id'])
+      await h.waitFor(
+        m => m.method === 'session/update' && (m.params as any)?.update?.content?.text === 'forked question',
+        'forked history replay',
+      )
       h.send({ jsonrpc: '2.0', id: 4, method: 'session/list', params: {} })
       const listed = await h.waitFor(m => m.id === 4, 'session/list')
-      expect((listed.result as any).sessions).toContainEqual({ sessionId: 'new-session-1', cwd: '/tmp' })
+      expect((listed.result as any).sessions).toContainEqual({ sessionId: 'new-session-0', cwd: '/tmp' })
+    } finally {
+      await h.close()
+    }
+  })
+
+  it('merges disk sessions into session/list, preferring in-memory entries', async () => {
+    const h = createHarness()
+    try {
+      await initialize(h)
+      listedSessions = [
+        {
+          sessionId: 'disk-only',
+          cwd: '/disk',
+          customTitle: 'From disk',
+          lastModified: '2026-11-20T10:00:00.000Z',
+        },
+        {
+          sessionId: 'fake-session-id',
+          cwd: '/stale',
+          summary: 'Stale title',
+          lastModified: '2026-11-21T10:00:00.000Z',
+        },
+      ]
+      h.send({ jsonrpc: '2.0', id: 2, method: 'session/new', params: { cwd: '/tmp' } })
+      await h.waitFor(m => m.id === 2, 'session/new')
+      h.send({ jsonrpc: '2.0', id: 3, method: 'session/list', params: {} })
+      const listed = await h.waitFor(m => m.id === 3, 'session/list')
+      const sessions = (listed.result as any).sessions
+      expect(sessions).toContainEqual({
+        sessionId: 'disk-only',
+        cwd: '/disk',
+        title: 'From disk',
+        updatedAt: '2026-11-20T10:00:00.000Z',
+      })
+      expect(sessions).toContainEqual({ sessionId: 'fake-session-id', cwd: '/tmp' })
+      expect(sessions.filter((s: any) => s.sessionId === 'fake-session-id')).toHaveLength(1)
     } finally {
       await h.close()
     }
