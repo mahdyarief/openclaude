@@ -279,7 +279,7 @@ export function buildConfigSettings(): ConfigSetting[] {
       type: 'boolean',
       label: 'Flicker-free mode',
       description: 'Alt-screen rendering to reduce terminal flicker.',
-      read: () => global.flickerFreeMode ?? false,
+      read: () => global.flickerFreeMode ?? true,
       write: value => saveGlobal('flickerFreeMode', Boolean(value)),
     },
 
