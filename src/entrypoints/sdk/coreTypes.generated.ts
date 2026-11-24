@@ -2092,6 +2092,7 @@ export type SDKSessionInfo = {
   gitBranch?: string
   cwd?: string
   tag?: string
+  forkParentSessionId?: string
   createdAt?: number
 }
 

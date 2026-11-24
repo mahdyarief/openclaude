@@ -53,6 +53,7 @@ import {
   type ContextCollapseSnapshotEntry,
   type Entry,
   type FileHistorySnapshotMessage,
+  type ForkMetadataEntry,
   type GoalStateEntry,
   type LogOption,
   type PersistedWorktreeSession,
@@ -935,6 +936,7 @@ class Project {
   currentSessionPrRepository: string | undefined
   currentSessionGoal: GoalStateEntry['goal'] | undefined
   currentSessionBranch: SessionBranchEntry | undefined
+  currentSessionFork: ForkMetadataEntry | undefined
 
   sessionFile: string | null = null
   // Entries buffered while sessionFile is null. Flushed by materializeSessionFile
@@ -1451,6 +1453,12 @@ class Project {
         sessionId,
       })
     }
+    if (this.currentSessionFork) {
+      appendEntryToFile(this.sessionFile, {
+        ...this.currentSessionFork,
+        sessionId,
+      })
+    }
   }
 
   async flush(): Promise<void> {
@@ -1904,6 +1912,8 @@ class Project {
     } else if (entry.type === 'goal-state') {
       await this.appendToFile(sessionFile, jsonStringify(entry) + '\n')
     } else if (entry.type === 'session-branch') {
+      void this.enqueueWrite(sessionFile, entry)
+    } else if (entry.type === 'fork') {
       void this.enqueueWrite(sessionFile, entry)
     } else if (entry.type === 'marble-origami-commit') {
       // Always append. Commit order matters for restore (later commits may
@@ -3377,6 +3387,7 @@ export async function loadTranscriptFromFile(
       worktreeStates,
       goalStates,
       sessionBranches,
+      forks,
     } = await loadTranscriptFile(filePath)
 
     if (messages.size === 0) {
@@ -3424,6 +3435,9 @@ export async function loadTranscriptFromFile(
         : undefined,
       goal: goalStates.get(sessionId),
       sessionBranch: sessionBranches.get(sessionId),
+      forkParentSessionId: forks.get(sessionId)?.forkParentSessionId,
+      forkedAt: forks.get(sessionId)?.forkedAt,
+      forkBoundaryMessageId: forks.get(sessionId)?.forkBoundaryMessageId,
     }
   }
 
@@ -3843,6 +3857,10 @@ export function restoreSessionMetadata(meta: {
   prRepository?: string
   goal?: GoalStateEntry['goal']
   sessionBranch?: SessionBranchEntry
+  fork?: ForkMetadataEntry
+  forkParentSessionId?: string
+  forkedAt?: string
+  forkBoundaryMessageId?: string
 }): void {
   const project = getProject()
   // ??= so --name (cacheSessionTitle) wins over the resumed
@@ -3866,6 +3884,24 @@ export function restoreSessionMetadata(meta: {
   // Branch lineage is structural metadata. Absence means this session is not
   // a branch, so clear stale branch cache before it can be re-appended.
   project.currentSessionBranch = meta.sessionBranch ?? undefined
+  // Fork lineage is written once when the fork is created and re-appended on
+  // exit. Resuming a non-fork session must not inherit a previous session's
+  // fork parent, so absence clears it. Resuming an existing fork rebuilds the
+  // entry from the lite metadata so reAppendSessionMetadata keeps carrying it
+  // after compaction.
+  project.currentSessionFork =
+    meta.fork ??
+    (meta.forkParentSessionId
+      ? {
+          type: 'fork',
+          sessionId: getSessionId() as UUID,
+          forkParentSessionId: meta.forkParentSessionId as UUID,
+          forkedAt: meta.forkedAt ?? new Date().toISOString(),
+          ...(meta.forkBoundaryMessageId
+            ? { forkBoundaryMessageId: meta.forkBoundaryMessageId as UUID }
+            : {}),
+        }
+      : undefined)
 }
 
 /**
@@ -3888,6 +3924,7 @@ export function clearSessionMetadata(): void {
   project.currentSessionPrRepository = undefined
   project.currentSessionGoal = undefined
   project.currentSessionBranch = undefined
+  project.currentSessionFork = undefined
 }
 
 /**
@@ -3955,6 +3992,28 @@ export function saveAgentSetting(agentSetting: string): void {
  */
 export function cacheSessionTitle(customTitle: string): void {
   getProject().currentSessionTitle = customTitle
+}
+
+/**
+ * Cache the transcript this session was forked from. Written to disk by
+ * materializeSessionFile on the first user message, and re-stamped by
+ * reAppendSessionMetadata on exit. Cache-only here so no orphan
+ * metadata-only file is created before the session ID is finalized.
+ */
+export function cacheForkParentSessionId(
+  forkParentSessionId: string | undefined,
+  forkBoundaryMessageId?: string,
+): void {
+  if (!forkParentSessionId) return
+  getProject().currentSessionFork = {
+    type: 'fork',
+    sessionId: getSessionId() as UUID,
+    forkParentSessionId: forkParentSessionId as UUID,
+    forkedAt: new Date().toISOString(),
+    ...(forkBoundaryMessageId
+      ? { forkBoundaryMessageId: forkBoundaryMessageId as UUID }
+      : {}),
+  }
 }
 
 /**
@@ -4229,6 +4288,7 @@ export async function loadFullLog(log: LogOption): Promise<LogOption> {
       contentReplacements,
       goalStates,
       sessionBranches,
+      forks,
       contextCollapseCommits,
       contextCollapseSnapshot,
       leafUuids,
@@ -4296,6 +4356,17 @@ export async function loadFullLog(log: LogOption): Promise<LogOption> {
       sessionBranch: sessionId
         ? (sessionBranches.get(sessionId) ?? log.sessionBranch)
         : log.sessionBranch,
+      forkParentSessionId: sessionId
+        ? (forks.get(sessionId)?.forkParentSessionId ??
+          log.forkParentSessionId)
+        : log.forkParentSessionId,
+      forkedAt: sessionId
+        ? (forks.get(sessionId)?.forkedAt ?? log.forkedAt)
+        : log.forkedAt,
+      forkBoundaryMessageId: sessionId
+        ? (forks.get(sessionId)?.forkBoundaryMessageId ??
+          log.forkBoundaryMessageId)
+        : log.forkBoundaryMessageId,
       // Filter to the resumed session's entries. loadTranscriptFile reads
       // the file sequentially so the array is already in commit order;
       // filter preserves that.
@@ -4380,6 +4451,7 @@ const METADATA_TYPE_MARKERS = [
   '"type":"pr-link"',
   '"type":"goal-state"',
   '"type":"session-branch"',
+  '"type":"fork"',
 ]
 const METADATA_MARKER_BUFS = METADATA_TYPE_MARKERS.map(m => Buffer.from(m))
 // Longest marker plus the leading `{` fits within this bound.
@@ -4751,6 +4823,7 @@ export async function loadTranscriptFile(
   agentContentReplacements: Map<AgentId, ContentReplacementRecord[]>
   goalStates: Map<UUID, GoalStateEntry['goal']>
   sessionBranches: Map<UUID, SessionBranchEntry>
+  forks: Map<UUID, ForkMetadataEntry>
   contextCollapseCommits: ContextCollapseCommitEntry[]
   contextCollapseSnapshot: ContextCollapseSnapshotEntry | undefined
   leafUuids: Set<UUID>
@@ -4776,6 +4849,7 @@ export async function loadTranscriptFile(
   >()
   const goalStates = new Map<UUID, GoalStateEntry['goal']>()
   const sessionBranches = new Map<UUID, SessionBranchEntry>()
+  const forks = new Map<UUID, ForkMetadataEntry>()
   // Array, not Map — commit order matters (nested collapses).
   const contextCollapseCommits: ContextCollapseCommitEntry[] = []
   // Last-wins — later entries supersede.
@@ -4879,6 +4953,8 @@ export async function loadTranscriptFile(
           goalStates.set(entry.sessionId, entry.goal)
         } else if (entry.type === 'session-branch' && entry.sessionId) {
           sessionBranches.set(entry.sessionId, entry)
+        } else if (entry.type === 'fork' && entry.sessionId) {
+          forks.set(entry.sessionId, entry)
         }
       })
     }
@@ -4947,6 +5023,8 @@ export async function loadTranscriptFile(
         goalStates.set(entry.sessionId, entry.goal)
       } else if (entry.type === 'session-branch' && entry.sessionId) {
         sessionBranches.set(entry.sessionId, entry)
+      } else if (entry.type === 'fork' && entry.sessionId) {
+        forks.set(entry.sessionId, entry)
       } else if (entry.type === 'file-history-snapshot') {
         fileHistorySnapshots.set(entry.messageId, entry)
       } else if (entry.type === 'attribution-snapshot') {
@@ -5085,6 +5163,7 @@ export async function loadTranscriptFile(
     agentContentReplacements,
     goalStates,
     sessionBranches,
+    forks,
     contextCollapseCommits,
     contextCollapseSnapshot,
     leafUuids,
@@ -5106,6 +5185,7 @@ async function loadSessionFile(sessionId: UUID): Promise<{
   contentReplacements: Map<UUID, ContentReplacementRecord[]>
   goalStates: Map<UUID, GoalStateEntry['goal']>
   sessionBranches: Map<UUID, SessionBranchEntry>
+  forks: Map<UUID, ForkMetadataEntry>
   contextCollapseCommits: ContextCollapseCommitEntry[]
   contextCollapseSnapshot: ContextCollapseSnapshotEntry | undefined
 }> {
@@ -5163,6 +5243,7 @@ export async function getLastSessionLog(
     contentReplacements,
     goalStates,
     sessionBranches,
+    forks,
     contextCollapseCommits,
     contextCollapseSnapshot,
   } = await loadSessionFile(sessionId)
@@ -5206,6 +5287,9 @@ export async function getLastSessionLog(
     worktreeSession: worktreeStates.get(sessionId),
     goal: goalStates.get(sessionId),
     sessionBranch: sessionBranches.get(sessionId),
+    forkParentSessionId: forks.get(sessionId)?.forkParentSessionId,
+    forkedAt: forks.get(sessionId)?.forkedAt,
+    forkBoundaryMessageId: forks.get(sessionId)?.forkBoundaryMessageId,
     contextCollapseCommits: contextCollapseCommits.filter(
       e => e.sessionId === sessionId,
     ),
@@ -5879,6 +5963,9 @@ type LiteMetadata = {
   prUrl?: string
   prRepository?: string
   sessionBranch?: SessionBranchEntry
+  forkParentSessionId?: string
+  forkedAt?: string
+  forkBoundaryMessageId?: string
 }
 
 const SESSION_BRANCH_ENTRY_PREFIX = '{"type":"session-branch"'
@@ -5953,6 +6040,68 @@ function extractSessionBranchMetadata(
   )
 }
 
+const FORK_ENTRY_PREFIX = '{"type":"fork"'
+const FORK_ENTRY_PREFIX_SPACED = '{"type": "fork"'
+
+function isForkMetadataEntry(
+  entry: unknown,
+  sessionId?: string,
+): entry is ForkMetadataEntry {
+  if (typeof entry !== 'object' || entry === null) return false
+  const candidate = entry as Partial<ForkMetadataEntry>
+  return (
+    candidate.type === 'fork' &&
+    typeof candidate.sessionId === 'string' &&
+    (sessionId === undefined || candidate.sessionId === sessionId) &&
+    typeof candidate.forkParentSessionId === 'string' &&
+    typeof candidate.forkedAt === 'string' &&
+    (candidate.forkBoundaryMessageId === undefined ||
+      typeof candidate.forkBoundaryMessageId === 'string')
+  )
+}
+
+function parseForkMetadataLine(
+  line: string,
+  sessionId?: string,
+): ForkMetadataEntry | undefined {
+  const trimmed = line.trim()
+  if (
+    !trimmed.startsWith(FORK_ENTRY_PREFIX) &&
+    !trimmed.startsWith(FORK_ENTRY_PREFIX_SPACED)
+  ) {
+    return undefined
+  }
+  try {
+    const entry = jsonParse(trimmed)
+    return isForkMetadataEntry(entry, sessionId) ? entry : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function extractForkMetadataFromChunk(
+  chunk: string,
+  sessionId?: string,
+): ForkMetadataEntry | undefined {
+  const lines = chunk.split('\n')
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const entry = parseForkMetadataLine(lines[i] ?? '', sessionId)
+    if (entry) return entry
+  }
+  return undefined
+}
+
+function extractForkMetadata(
+  head: string,
+  tail: string,
+  sessionId?: string,
+): ForkMetadataEntry | undefined {
+  return (
+    extractForkMetadataFromChunk(tail, sessionId) ??
+    (head === tail ? undefined : extractForkMetadataFromChunk(head, sessionId))
+  )
+}
+
 /**
  * Loads all logs from a single session file with full message data.
  * Builds a LogOption for each leaf message in the file.
@@ -5978,6 +6127,7 @@ export async function loadAllLogsFromSessionFile(
     contentReplacements,
     goalStates,
     sessionBranches,
+    forks,
     leafUuids,
   } = await loadTranscriptFile(sessionFile, { keepAllLeaves: true })
 
@@ -6053,6 +6203,9 @@ export async function loadAllLogsFromSessionFile(
       contentReplacements: contentReplacements.get(sessionId) ?? [],
       goal: goalStates.get(sessionId),
       sessionBranch: sessionBranches.get(sessionId),
+      forkParentSessionId: forks.get(sessionId)?.forkParentSessionId,
+      forkedAt: forks.get(sessionId)?.forkedAt,
+      forkBoundaryMessageId: forks.get(sessionId)?.forkBoundaryMessageId,
     })
   }
 
@@ -6179,6 +6332,8 @@ export async function readLiteMetadata(
     }
   }
   const sessionBranch = extractSessionBranchMetadata(head, tail, sessionId)
+  const fork = extractForkMetadata(head, tail, sessionId)
+  const forkParentSessionId = fork?.forkParentSessionId
 
   return {
     firstPrompt,
@@ -6195,6 +6350,9 @@ export async function readLiteMetadata(
     prUrl,
     prRepository,
     sessionBranch,
+    forkParentSessionId,
+    forkedAt: fork?.forkedAt,
+    forkBoundaryMessageId: fork?.forkBoundaryMessageId,
   }
 }
 
@@ -6529,6 +6687,10 @@ async function enrichLog(
     prUrl: meta.prUrl,
     prRepository: meta.prRepository,
     sessionBranch: meta.sessionBranch,
+    forkParentSessionId: meta.forkParentSessionId as LogOption['forkParentSessionId'],
+    forkedAt: meta.forkedAt,
+    forkBoundaryMessageId:
+      meta.forkBoundaryMessageId as LogOption['forkBoundaryMessageId'],
     projectPath: meta.projectPath ?? log.projectPath,
   }
 
