@@ -13,6 +13,7 @@ export { default as PromptBar } from "./PromptBar.js";
 export type {
   PromptBarProps,
   PromptBarLabels,
+  PromptBarMentionOption,
   PromptBarModeOption,
   PromptTab,
 } from "./PromptBar.js";

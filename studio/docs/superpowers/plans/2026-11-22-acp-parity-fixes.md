@@ -10,8 +10,9 @@
 Rencana ini menindaklanjuti audit "ACP 1:1 dengan terminal". Pengguna memilih tiga grup:
 **A. Bug server ACP**, **B. Elicitation jujur**, **C. `session/list` dari disk**.
 
-Di luar scope (sengaja ditunda): sinkron mode agent→UI (`currentModeId`), chip `locations`,
-@-mention / paste / drop, tombol fork/delete di UI.
+Fase lanjutan (2026-11-23, lihat "Grup D"): sinkron mode agent→UI (`currentModeId`), chip
+`locations`, @-mention / paste / drop, dan tombol fork/delete di UI — semuanya sudah
+diimplementasikan.
 
 ## Keputusan desain
 
@@ -229,6 +230,10 @@ pnpm -r build
 - [x] A6 Response basi diabaikan + timeout tes 5 s
 - [x] B Elicitation tidak diiklankan
 - [x] C `session/list` dari disk
+- [x] D1 Mode agent→UI: `session/new`/`session/load` menyimpan `modes`, selector composer memakai `availableModes` + `currentModeId`
+- [x] D2 Chip `locations` pada tool call (maks. 4 + penghitung luapan)
+- [x] D3 `@`-mention, paste, dan drag-drop di composer
+- [x] D4 Tombol fork dan delete sesi (delete dengan dialog konfirmasi)
 - [x] Gate Studio hijau; gate root `typecheck`/ACP/SDK-targeted pass, full SDK suites ada dua baseline failure `mcp-cleanup.test.ts`
 
 ## Hasil verifikasi
@@ -243,6 +248,18 @@ pnpm -r build
 - `bun run check` pada working tree sukses: build, smoke, deadcode, dan `test:full`.
 - Studio `vitest run` — 33 file / 252 tes pass.
 - Studio `tsc -b` untuk semua paket — bersih.
+- Grup D (2026-11-23): Studio `pnpm -r typecheck` bersih, `vitest run` 34 file / 263 tes pass,
+  `pnpm -r build` sukses. Tes baru: `connection.test.ts` (mode dari `session/load`),
+  `PromptBar.test.tsx`, `ChatPane.test.tsx` (aksi sesi), `MessageBubble.test.tsx` (chip lokasi).
+
+## Grup D — UI parity (2026-11-23)
+
+| # | Perubahan | File |
+|---|-----------|------|
+| D1 | `ActiveSessionLike.modes` diisi dari respons `session/load`; store sesi di-seed dari `session/new`/`session/load`; `Workbench` memakai `state.modes.availableModes` dan `currentModeId`, jatuh ke `PERMISSION_MODE_OPTIONS` bila agen tidak mengiklankan mode | `packages/acp/src/connection.ts`, `apps/web/src/use-agent-session.ts`, `apps/web/src/Workbench.tsx` |
+| D2 | Chip path(+baris) per tool call, 4 pertama lalu `+N` | `packages/ui/src/shell/MessageBubble.tsx` |
+| D3 | Menu `@`-mention memfilter file workspace, `onPaste` menangkap file klip, kartu composer menerima drag-drop | `packages/ui/src/beautifui/PromptBar.tsx`, `apps/web/src/Workbench.tsx` |
+| D4 | Tombol Fork/Delete di header `ChatPane`; delete melewati `Dialog` konfirmasi; sukses memanggil `closeTab` + refresh rail | `packages/ui/src/shell/ChatPane.tsx`, `packages/ui/src/shadcn/button.tsx` (varian `danger`), `apps/web/src/Workbench.tsx` |
 
 Catatan: cabang `deny` di `coreSchemas.ts` diperluas agar menerima `updatedPermissions`, lalu
 `coreTypes.generated.ts` diregenerasi melalui `bun scripts/generate-sdk-types.ts`.

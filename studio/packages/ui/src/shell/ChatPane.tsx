@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import type {
   AgentQuestion,
   ConnectionStatus,
@@ -11,6 +11,14 @@ import type {
 import { LoadingState, QuestionPanel } from '../beautifui/index.js'
 import { cn } from '../lib/cn.js'
 import { Button } from '../shadcn/button.js'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '../shadcn/dialog.js'
 import { Skeleton } from '../shadcn/skeleton.js'
 import { MessageList } from './MessageList.js'
 import {
@@ -57,6 +65,16 @@ export type ChatPaneProps = {
   onConfigOptionChange?: ((optionId: string, value: string | boolean) => void) | undefined
   /** agent-supplied session title, shown in the status header when available */
   sessionTitle?: string | null | undefined
+  /** fork the current stored session into a new one */
+  onFork?: (() => void) | undefined
+  /** delete the current stored session from disk */
+  onDelete?: (() => void) | undefined
+  /** true while a fork request is in flight */
+  forking?: boolean | undefined
+  /** true while a delete request is in flight */
+  deleting?: boolean | undefined
+  /** surfaced when a fork or delete request fails */
+  actionError?: string | null | undefined
   /** composer pinned to the bottom */
   children?: ReactNode
 }
@@ -109,10 +127,16 @@ export function ChatPane({
   configOptions,
   onConfigOptionChange,
   sessionTitle,
+  onFork,
+  onDelete,
+  forking = false,
+  deleting = false,
+  actionError,
   children,
 }: ChatPaneProps) {
   const stopLabel = stopReason ? (STOP_LABELS[stopReason] ?? stopReason) : null
   const tone = STATUS_TONE[status]
+  const [confirmDelete, setConfirmDelete] = useState(false)
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -162,10 +186,67 @@ export function ChatPane({
             End session
           </Button>
         ) : null}
+        {!ended && status !== 'connecting' && (onFork || onDelete) ? (
+          <>
+            {onFork ? (
+              <Button
+                variant="quiet"
+                size="sm"
+                onClick={onFork}
+                disabled={forking}
+                className="ml-2 h-5 rounded-[var(--radius-control)] px-1.5 text-[11px]"
+              >
+                {forking ? 'Forking…' : 'Fork'}
+              </Button>
+            ) : null}
+            {onDelete ? (
+              <Button
+                variant="quiet"
+                size="sm"
+                onClick={() => setConfirmDelete(true)}
+                disabled={deleting}
+                className="ml-1 h-5 rounded-[var(--radius-control)] px-1.5 text-[11px] text-red"
+              >
+                {deleting ? 'Deleting…' : 'Delete'}
+              </Button>
+            ) : null}
+          </>
+        ) : null}
         {ended && status === 'idle' ? (
           <span className="ml-2 text-[11px] text-ink-3">Ended</span>
         ) : null}
+        {actionError ? (
+          <span role="alert" className="ml-2 min-w-0 truncate text-[11px] text-red" title={actionError}>
+            {actionError}
+          </span>
+        ) : null}
       </div>
+
+      <Dialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete this session?</DialogTitle>
+            <DialogDescription>
+              This permanently removes the stored conversation from disk. It cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="quiet" size="sm" onClick={() => setConfirmDelete(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
+              onClick={() => {
+                setConfirmDelete(false)
+                onDelete?.()
+              }}
+            >
+              Delete session
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <SessionActivity
         notice={notice}

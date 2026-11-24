@@ -59,6 +59,34 @@ describe('MessageBubble tool chips', () => {
     expect(html).toContain('terminal s1')
   })
 
+  test('renders location chips with line numbers and folds the overflow', () => {
+    const searchCall: ToolCall = {
+      toolCallId: 'l1',
+      title: 'Grep',
+      kind: 'search',
+      status: 'completed',
+      locations: [
+        { path: 'src/a.ts', line: 12 },
+        { path: 'src/b.ts' },
+        { path: 'src/c.ts' },
+        { path: 'src/d.ts' },
+        { path: 'src/e.ts' },
+        { path: 'src/f.ts' },
+      ],
+    }
+    const html = render(agentMessage('l1'), { l1: searchCall })
+
+    expect(html).toContain('src/a.ts</span>:12')
+    expect(html).toContain('>+2<')
+    expect(html).not.toContain('src/f.ts')
+  })
+
+  test('omits the location row when a tool call reports none', () => {
+    const { locations: _locations, ...withoutLocations } = editCall
+    const html = render(agentMessage('t1'), { t1: withoutLocations })
+    expect(html).not.toContain('title="/work/a.ts"')
+  })
+
   test('uses shadcn collapsible instead of hand-rolled details and literal widths', () => {
     const html = render(agentMessage('t1'), { t1: editCall })
 

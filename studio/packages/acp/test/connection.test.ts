@@ -45,6 +45,8 @@ type FakeAgentOptions = {
   observed?: Array<{ method: string; params: unknown }>
   /** Probe forwarded client methods while handling session/new. */
   afterNew?: (ctx: any) => Promise<void>
+  /** Extra fields merged into the `session/load` response (e.g. `modes`). */
+  loadResult?: Record<string, unknown>
 }
 
 function makeFakeAgent(opts: FakeAgentOptions = {}): AgentApp {
@@ -66,7 +68,7 @@ function makeFakeAgent(opts: FakeAgentOptions = {}): AgentApp {
     })
     .onRequest(AGENT_METHODS.session_load, (ctx) => {
       opts.onLoad?.(ctx.params)
-      return { _meta: null }
+      return { _meta: null, ...opts.loadResult }
     })
     .onRequest(AGENT_METHODS.session_list, (ctx) => {
       opts.observed?.push({ method: AGENT_METHODS.session_list, params: ctx.params })
@@ -145,6 +147,31 @@ describe('createAgentConnection session selection', () => {
 
     expect(loadParams).toEqual({ cwd: '/work', mcpServers: [], sessionId: 'sess-1' })
     expect(handle.sessionId).toBe('sess-1')
+  })
+
+  it('keeps the mode state returned by session/load on the session handle', async () => {
+    const modes = {
+      currentModeId: 'plan',
+      availableModes: [
+        { id: 'default', name: 'Default' },
+        { id: 'plan', name: 'Plan' },
+      ],
+    }
+    const app = makeFakeAgent({ loadResult: { modes } })
+
+    const { createAgentConnection } = await import('../src/connection.js')
+    const promise = createAgentConnection({
+      url: 'ws://localhost:1234/acp',
+      token: 'secret',
+      cwd: '/work',
+      sessionId: 'sess-1',
+      onUpdate: () => {},
+      onPermission: async () => CANCELLED_PERMISSION,
+    })
+    connectFakeAgent(app)
+    const handle = await promise
+
+    expect(handle.session.modes).toEqual(modes)
   })
 
   it('sends session/new when no sessionId is provided', async () => {

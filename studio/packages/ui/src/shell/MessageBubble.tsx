@@ -263,6 +263,24 @@ export function MessageBubble({
                   </Badge>
                 ) : null}
               </span>
+              {tc?.locations && tc.locations.length > 0 ? (
+                <span className="flex flex-wrap items-center gap-1">
+                  {tc.locations.slice(0, 4).map((location, i) => (
+                    <Badge
+                      key={`${location.path}-${i}`}
+                      variant="outline"
+                      className="max-w-full font-mono text-[10.5px]"
+                      title={location.path}
+                    >
+                      <span className="truncate">{location.path}</span>
+                      {typeof location.line === 'number' ? `:${location.line}` : ''}
+                    </Badge>
+                  ))}
+                  {tc.locations.length > 4 ? (
+                    <Badge variant="outline">+{tc.locations.length - 4}</Badge>
+                  ) : null}
+                </span>
+              ) : null}
               {diffBlocks.map((diff, i) => (
                 <ToolDetail key={`diff-${i}`} label={`diff ${diff.path}`} defaultOpen>
                   <DiffLines diff={diff} />

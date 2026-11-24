@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AppShell,
   Button,
@@ -18,6 +18,7 @@ import {
   SlashCommandPanel,
   type ConfigSection,
   type DiffPart,
+  type PromptBarMentionOption,
   type StudioPanelKind,
 } from '@openclaude-studio/ui'
 import {
@@ -118,6 +119,22 @@ export function Workbench({
     config.token,
     project.path,
   )
+
+  // `@` mentions cover every file the explorer has listed so far. Nested
+  // folders join the list as the user expands them, so building it stays cheap
+  // and never walks the whole workspace.
+  const mentionOptions = useMemo<PromptBarMentionOption[]>(() => {
+    const seen = new Set<string>()
+    const options: PromptBarMentionOption[] = []
+    for (const listing of Object.values(dirs)) {
+      for (const entry of listing.entries ?? []) {
+        if (entry.kind !== 'file' || seen.has(entry.path)) continue
+        seen.add(entry.path)
+        options.push({ path: entry.path })
+      }
+    }
+    return options.sort((a, b) => a.path.localeCompare(b.path))
+  }, [dirs])
   const { metrics, error: metricsError } = useMetrics(config)
 
   // A file clicked in the explorer opens as a document tab. `openDocument` is
@@ -362,6 +379,12 @@ export function Workbench({
                       cwd: tab.cwd,
                     })
                   }}
+                  mentionOptions={mentionOptions}
+                  onSessionsChanged={() => void refreshSessions(tab.cwd)}
+                  onDeleted={() => {
+                    closeTab(tab.tabId)
+                    void refreshSessions(tab.cwd)
+                  }}
                 />
               </div>
             )
@@ -396,6 +419,9 @@ function SessionPane({
   onRemoteSessions,
   workspaceSessions,
   onOpenSession,
+  mentionOptions,
+  onSessionsChanged,
+  onDeleted,
 }: {
   config: BridgeConfig
   cwd: string
@@ -416,6 +442,12 @@ function SessionPane({
   workspaceSessions: WorkspaceSessions
   /** open a saved session in a tab */
   onOpenSession: (session: SessionSummary) => void
+  /** workspace files offered by the composer's `@` menu */
+  mentionOptions?: PromptBarMentionOption[] | undefined
+  /** a fork created a session on disk; refresh the workspace rail */
+  onSessionsChanged?: (() => void) | undefined
+  /** the session was deleted on disk; close the tab and refresh the rail */
+  onDeleted?: (() => void) | undefined
 }) {
   // Freeze the id the pane opened with. A temp tab gains its real id after the
   // first prompt; once we have that stable identity, tear down the live socket
@@ -444,6 +476,7 @@ function SessionPane({
     dismissNotice,
     setConfigOption,
     sessions,
+    sessionId: liveSessionId,
     remoteSessionList,
     refreshSessionList,
   } = useAgentSession({
@@ -462,6 +495,9 @@ function SessionPane({
   const [panel, setPanel] = useState<StudioPanelKind>('status')
   const [panelOpen, setPanelOpen] = useState(false)
   const [commandNotice, setCommandNotice] = useState<{ title: string; description: string } | null>(null)
+  const [forking, setForking] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [actionError, setActionError] = useState<string | null>(null)
   const [attachments, setAttachments] = useState<ContentBlock[]>([])
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
@@ -560,6 +596,62 @@ function SessionPane({
     setAttachments(previous => [...previous, ...blocks])
   }, [])
 
+  // The live id appears once `session/new` resolves, or is given when the tab
+  // was opened from the session list.
+  const activeSessionId = liveSessionId ?? sessionId
+
+  // The agent advertises its modes on `session/new`/`session/load` and pushes
+  // `current_mode_update` when it changes them itself. Fall back to the
+  // bridge-backed permission modes when the agent exposes none.
+  const agentModes = state.modes?.availableModes ?? []
+  const modeOptions =
+    agentModes.length > 0
+      ? agentModes.map(entry => ({ id: entry.id, label: entry.name }))
+      : PERMISSION_MODE_OPTIONS
+  const activeModeId = state.modes?.currentModeId ?? permissionMode
+
+  const changeMode = useCallback(
+    (id: string) => {
+      if (isPermissionMode(id)) onPermissionModeChange(id)
+      if (activeSessionId) void sessions?.setSessionMode({ sessionId: activeSessionId, modeId: id })
+    },
+    [activeSessionId, onPermissionModeChange, sessions],
+  )
+
+  const forkCurrent = useCallback(async () => {
+    if (!activeSessionId || !sessions) return
+    setActionError(null)
+    setForking(true)
+    try {
+      const forked = await sessions.forkSession({ sessionId: activeSessionId })
+      onOpenSession({
+        id: forked.sessionId,
+        title: state.title ? `${state.title} (fork)` : 'Forked session',
+        updatedAt: Date.now(),
+        messageCount: state.messages.length,
+      })
+      onSessionsChanged?.()
+    } catch (cause) {
+      setActionError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setForking(false)
+    }
+  }, [activeSessionId, sessions, onOpenSession, onSessionsChanged, state.title, state.messages.length])
+
+  const deleteCurrent = useCallback(async () => {
+    if (!activeSessionId || !sessions) return
+    setActionError(null)
+    setDeleting(true)
+    try {
+      await sessions.deleteSession({ sessionId: activeSessionId })
+      onDeleted?.()
+    } catch (cause) {
+      setActionError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setDeleting(false)
+    }
+  }, [activeSessionId, sessions, onDeleted])
+
   if (status === 'connecting') {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3">
@@ -592,6 +684,11 @@ function SessionPane({
       configOptions={state.configOptions}
       onConfigOptionChange={(id, value) => void setConfigOption(id, value)}
       sessionTitle={state.title}
+      onFork={activeSessionId && sessions ? forkCurrent : undefined}
+      onDelete={activeSessionId && sessions ? deleteCurrent : undefined}
+      forking={forking}
+      deleting={deleting}
+      actionError={actionError}
     >
       {pendingPermission && !pendingPermission.questions?.length ? (
         <div
@@ -682,12 +779,9 @@ function SessionPane({
         onCancel={cancel}
         disabled={disabled}
         streaming={state.streaming}
-        modes={PERMISSION_MODE_OPTIONS}
-        mode={permissionMode}
-        onModeChange={id => {
-          if (isPermissionMode(id)) onPermissionModeChange(id)
-          if (sessionId) void sessions?.setSessionMode({ sessionId, modeId: id })
-        }}
+        modes={modeOptions}
+        mode={activeModeId}
+        onModeChange={changeMode}
         commands={state.commands}
         onCommandPick={name => {
           // A menu pick carries the bare name; route it through the same
@@ -695,6 +789,8 @@ function SessionPane({
           if (handleSlashCommand(`/${name}`)) return
         }}
         onAttach={() => fileInputRef.current?.click()}
+        onFiles={files => void attachFiles(files)}
+        mentions={mentionOptions}
         labels={{ placeholder: disabled ? 'Connecting…' : 'Ask OpenClaude…', attach: attachments.length ? `${attachments.length} attached` : 'Attach' }}
       />
       <Input

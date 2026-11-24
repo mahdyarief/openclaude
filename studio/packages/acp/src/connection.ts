@@ -39,6 +39,7 @@ import {
   type SetSessionModeResponse,
   type SetSessionConfigOptionRequest,
   type SetSessionConfigOptionResponse,
+  type SessionModeState,
   type McpServer,
 } from '@agentclientprotocol/sdk'
 import { createWebSocketStream } from '@agentclientprotocol/sdk/experimental/ws-client'
@@ -83,6 +84,8 @@ export type McpServerStatus = {
  */
 export type ActiveSessionLike = {
   sessionId: string
+  /** mode state the agent returned from `session/new` or `session/load` */
+  modes?: SessionModeState | null | undefined
   prompt: (
     prompt: string | ContentBlock | Array<ContentBlock>,
     options?: SendRequestOptions,
@@ -522,7 +525,7 @@ export async function createAgentConnection(
   // `session/prompt` with a minimal adapter whose shape matches the app's usage.
   if (options.sessionId) {
     const sessionId = options.sessionId
-    await connection.agent.request(AGENT_METHODS.session_load, {
+    const loaded = await connection.agent.request(AGENT_METHODS.session_load, {
       cwd: options.cwd,
       mcpServers: mcpServers.map(({ status: _status, error: _error, ...server }) => server),
       sessionId,
@@ -530,6 +533,7 @@ export async function createAgentConnection(
     })
     const session: ActiveSessionLike = {
       sessionId,
+      modes: loaded.modes ?? null,
       prompt: (prompt, promptOptions) =>
         connection.agent.request(
           AGENT_METHODS.session_prompt,

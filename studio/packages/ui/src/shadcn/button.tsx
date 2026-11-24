@@ -19,6 +19,7 @@ const buttonVariants = cva(
         /* aliases kept for BeautifulUI call sites */
         primary: "bg-ink text-surface shadow-[var(--shadow-btn)] hover:opacity-90",
         success: "bg-green text-white hover:brightness-95",
+        danger: "bg-red text-white hover:brightness-95",
       },
       size: {
         xs: "h-7 px-2.5 text-[12px]",

@@ -364,6 +364,11 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
           return
         }
         handleRef.current = handle
+        // Seed the mode state advertised by `session/load`; the agent only
+        // pushes `current_mode_update` when the mode actually changes.
+        if (handle.session.modes) {
+          store.setState(current => ({ ...current, modes: handle.session.modes ?? null }))
+        }
         // `session/load` replays prior messages as ACP session notifications;
         // `applyUpdate` consumes them through the same path as live updates.
         // The JSONL read remains a fallback for older agents that do not replay.
@@ -561,6 +566,11 @@ export function useAgentSession(options: AgentSessionOptions): AgentSession {
         }
 
         const store = createSessionStore(session.sessionId, cwd)
+        // `session/new` returns the agent's mode state; keep it in the store so
+        // the composer selector reflects the agent instead of a local guess.
+        if (session.modes) {
+          store.setState(current => ({ ...current, modes: session.modes ?? null }))
+        }
         handleRef.current = {
           connection: handshake.connection,
           session,

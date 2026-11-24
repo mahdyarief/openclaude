@@ -25,6 +25,14 @@ export type PromptTab = {
   label: string;
 };
 
+/** one entry in the `@` file-mention menu */
+export type PromptBarMentionOption = {
+  /** path inserted into the draft, relative to the workspace root */
+  path: string;
+  /** visible label; defaults to the path */
+  label?: string;
+};
+
 /** one entry in the permission-mode selector */
 export type PromptBarModeOption = {
   /** stable id (the permission mode value) */
@@ -87,12 +95,24 @@ export type PromptBarProps = {
    * text. When omitted, every command inserts its text as before.
    */
   onCommandPick?: (name: string) => void;
+  /** files dropped onto the composer or pasted from the clipboard */
+  onFiles?: ((files: File[]) => void) | undefined;
+  /** workspace paths offered by the `@` mention menu */
+  mentions?: PromptBarMentionOption[] | undefined;
 };
 
 // The last `/word` being typed at the end of the draft, if any. Mirrors the
 // upstream BeautifulUI parser: a leading `/` on a fresh token opens the menu.
 function parseSlash(draft: string): { query: string; start: number } | null {
   const match = /(^|\s)\/([\w:-]*)$/.exec(draft);
+  if (!match) return null;
+  return { query: (match[2] ?? "").toLowerCase(), start: match.index + (match[1] ?? "").length };
+}
+
+// The last `@word` being typed at the end of the draft, if any. Mirrors the
+// terminal's `@` file reference, which inserts a workspace-relative path.
+function parseMention(draft: string): { query: string; start: number } | null {
+  const match = /(^|\s)@([\w./-]*)$/.exec(draft);
   if (!match) return null;
   return { query: (match[2] ?? "").toLowerCase(), start: match.index + (match[1] ?? "").length };
 }
@@ -115,11 +135,14 @@ export default function PromptBar({
   className,
   commands = [],
   onCommandPick,
+  onFiles,
+  mentions = [],
 }: PromptBarProps) {
   const l = { ...DEFAULT_LABELS, ...labels };
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const canSend = value.trim().length > 0 && !disabled && !streaming;
   const activeMode = modes?.find(option => option.id === mode) ?? modes?.[0];
+  const [dragging, setDragging] = useState(false);
 
   const slash = parseSlash(value);
   const matches = slash
@@ -130,11 +153,23 @@ export default function PromptBar({
   const menuOpen = slash !== null && matches.length > 0;
   const [active, setActive] = useState(0);
 
+  // Escape hides the `@` menu for the current draft without editing the text;
+  // any later keystroke produces a new draft, which reopens it.
+  const [dismissedMention, setDismissedMention] = useState<string | null>(null);
+  const parsedMention = parseMention(value);
+  const mention = parsedMention && value !== dismissedMention ? parsedMention : null;
+  const mentionMatches = mention
+    ? mentions
+        .filter(option => option.path.toLowerCase().includes(mention.query))
+        .slice(0, 8)
+    : [];
+  const mentionOpen = slash === null && mention !== null && mentionMatches.length > 0;
+
   // Reset the highlight whenever the query or the result set changes, and keep
   // it in range when filtering shrinks the list.
   useEffect(() => {
     setActive(0);
-  }, [slash?.query, matches.length]);
+  }, [slash?.query, matches.length, mention?.query, mentionMatches.length]);
 
   const pick = (name: string) => {
     if (!slash) return;
@@ -151,6 +186,13 @@ export default function PromptBar({
     inputRef.current?.focus();
   };
 
+  const pickMention = (path: string) => {
+    if (!mention) return;
+    const before = value.slice(0, mention.start);
+    onChange(`${before}@${path} `);
+    inputRef.current?.focus();
+  };
+
   // Auto-grow the textarea up to ~6 lines, then let it scroll natively (no
   // shadcn scroll primitive — a textarea already owns its own scrollbar).
   // `scrollHeight` is the only reliable measure for a textarea that starts at
@@ -162,21 +204,30 @@ export default function PromptBar({
     el.style.height = `${Math.min(el.scrollHeight, 132)}px`;
   }, [value]);
 
+  const menuItems = menuOpen ? matches.length : mentionMatches.length;
+  const menuActive = Math.min(active, Math.max(menuItems - 1, 0));
+
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (!menuOpen) return;
+    if (!menuOpen && !mentionOpen) return;
     if (event.key === "ArrowDown") {
       event.preventDefault();
-      setActive(i => (i + 1) % matches.length);
+      setActive(i => (i + 1) % menuItems);
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
-      setActive(i => (i - 1 + matches.length) % matches.length);
+      setActive(i => (i - 1 + menuItems) % menuItems);
     } else if (event.key === "Enter") {
       event.preventDefault();
-      const match = matches[active];
-      if (match) pick(match.name);
+      if (menuOpen) {
+        const match = matches[menuActive];
+        if (match) pick(match.name);
+      } else {
+        const match = mentionMatches[menuActive];
+        if (match) pickMention(match.path);
+      }
     } else if (event.key === "Escape") {
       event.preventDefault();
-      onChange(value.slice(0, slash.start));
+      if (menuOpen && slash) onChange(value.slice(0, slash.start));
+      else setDismissedMention(value);
     }
   };
 
@@ -187,8 +238,27 @@ export default function PromptBar({
 
   return (
     <div
+      onDragOver={event => {
+        if (!onFiles) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "copy";
+        setDragging(true);
+      }}
+      onDragLeave={event => {
+        if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+        setDragging(false);
+      }}
+      onDrop={event => {
+        if (!onFiles) return;
+        const files = Array.from(event.dataTransfer.files);
+        setDragging(false);
+        if (files.length === 0) return;
+        event.preventDefault();
+        onFiles(files);
+      }}
       className={cn(
         "flex w-full flex-col rounded-[var(--radius-card)] border border-line bg-surface shadow-[var(--shadow-card)]",
+        dragging && "border-accent ring-1 ring-accent",
         className,
       )}
     >
@@ -253,12 +323,50 @@ export default function PromptBar({
             </div>
           </div>
         ) : null}
+        {mentionOpen ? (
+          <div
+            role="listbox"
+            aria-label="Files"
+            className="absolute inset-x-2 bottom-full z-10 mb-1 rounded-[var(--radius-card)] border border-line bg-surface p-1 shadow-[var(--shadow-card)]"
+            style={{ animation: "pop-in 180ms cubic-bezier(0.23,1,0.32,1) both", transformOrigin: "bottom center" }}
+          >
+            {mentionMatches.map((option, i) => (
+              <button
+                key={option.path}
+                type="button"
+                role="option"
+                aria-selected={i === active}
+                onMouseDown={(event) => event.preventDefault()}
+                onMouseEnter={() => setActive(i)}
+                onClick={() => pickMention(option.path)}
+                className={cn(
+                  "flex h-9 w-full items-center gap-2 rounded-[var(--radius-chip)] px-2 text-left transition-colors duration-100",
+                  i === active ? "bg-hover" : "hover:bg-hover",
+                )}
+              >
+                <span className="shrink-0 font-mono text-[12px] font-medium text-accent-ink">@</span>
+                <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-ink-2">
+                  {option.label ?? option.path}
+                </span>
+              </button>
+            ))}
+            <div className="mt-1 border-t border-line px-2 pt-1.5 pb-1 text-[11px] text-ink-3">
+              Type to filter files · ↑↓ to move · Enter to insert
+            </div>
+          </div>
+        ) : null}
         <textarea
           ref={inputRef}
           value={value}
           onChange={(event) => onChange(event.target.value)}
+          onPaste={(event) => {
+            const files = Array.from(event.clipboardData.files);
+            if (files.length === 0 || !onFiles) return;
+            event.preventDefault();
+            onFiles(files);
+          }}
           onKeyDown={(event) => {
-            if (menuOpen) {
+            if (menuOpen || mentionOpen) {
               onKeyDown(event);
               if (event.defaultPrevented) return;
             }
