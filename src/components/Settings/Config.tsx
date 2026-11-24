@@ -959,9 +959,10 @@ export function Config({
     }
   }] : []), {
     id: 'flickerFreeMode',
-    description: 'Alt-screen rendering to reduce terminal flicker.',
+    description:
+      'Alt-screen rendering to reduce terminal flicker; also enables mouse hover/click in lists.',
     label: 'Flicker-free mode',
-    value: globalConfig.flickerFreeMode ?? true,
+    value: globalConfig.flickerFreeMode ?? false,
     type: 'boolean' as const,
     onChange(flickerFreeMode: boolean) {
       saveGlobalConfig(current => ({
