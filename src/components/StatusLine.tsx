@@ -545,7 +545,7 @@ function StatusLineInner({
       </Box>;
   }
   const lines = splitStatusLines(statusLineText).slice(0, statusLineRowCap(rows));
-  return <Box paddingX={paddingX} gap={2} flexDirection="column">
+  return <Box paddingX={paddingX} flexDirection="column">
       {lines.length === 1 ? <Text dimColor wrap="truncate">
           <Ansi>{lines[0]!}</Ansi>
         </Text> : lines.map((line, index) => <Text key={index} dimColor wrap="truncate">
