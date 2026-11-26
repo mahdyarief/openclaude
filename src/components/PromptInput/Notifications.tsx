@@ -27,7 +27,6 @@ import { getMessagesAfterCompactBoundary } from '../../utils/messages.js';
 import { tokenCountFromLastAPIResponse } from '../../utils/tokens.js';
 import { AutoUpdaterWrapper } from '../AutoUpdaterWrapper.js';
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
-import { getEffortNotificationText } from '../EffortIndicator.js';
 import { hasIdeSelection, IdeStatusIndicator } from '../IdeStatusIndicator.js';
 import { MemoryUsageIndicator } from '../MemoryUsageIndicator.js';
 import { SentryErrorBoundary } from '../SentryErrorBoundary.js';
@@ -281,13 +280,6 @@ function NotificationContent({
   const isBriefOnly = feature('KAIROS') || feature('KAIROS_BRIEF') ?
   // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
   useAppState(s_1 => s_1.isBriefOnly) : false;
-  const viewingAgentTaskId = feature('KAIROS') || feature('KAIROS_BRIEF') ?
-  // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
-  useAppState(s_2 => s_2.viewingAgentTaskId) : undefined;
-  const briefOwnsGap = isBriefOnly && !viewingAgentTaskId;
-  const shouldShowEffortFallback = !briefOwnsGap && !shouldShowIdeSelection;
-  const effortValue = useAppState(s_3 => s_3.effortValue);
-  const effortNotificationText = shouldShowEffortFallback ? getEffortNotificationText(effortValue, mainLoopModel) : undefined;
   let notificationNode: ReactNode = null;
   if (notifications.current) {
     if ('jsx' in notifications.current) {
@@ -303,10 +295,6 @@ function NotificationContent({
       </Text>;
     }
   }
-  const effortFallbackNode = effortNotificationText ? <Text dimColor wrap="truncate" key="effort-fallback">
-        {effortNotificationText}
-      </Text> : null;
-
   // When voice is actively recording or processing, replace all
   // notifications with just the voice indicator.
   if (feature('VOICE_MODE') && voiceEnabled && (voiceState === 'recording' || voiceState === 'processing')) {
@@ -314,7 +302,7 @@ function NotificationContent({
   }
   return <>
       <IdeStatusIndicator ideSelection={ideSelection} mcpClients={mcpClients} />
-      {notificationNode ?? effortFallbackNode}
+      {notificationNode}
       {isInOverageMode && !isTeamOrEnterprise && <Box>
           <Text dimColor wrap="truncate">
             Now using extra usage
