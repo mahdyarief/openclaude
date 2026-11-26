@@ -9,6 +9,10 @@ import { DEFAULT_OUTPUT_STYLE_NAME } from '../constants/outputStyles.js'
 import type { AppState } from '../state/AppState.js'
 import { calculateContextPercentages, getContextWindowForModel } from '../utils/context.js'
 import { getDisplayedEffortLevel, modelSupportsEffort } from '../utils/effort.js'
+import { shouldEnableThinkingByDefault } from '../utils/thinking.js'
+import { getCacheStatsHistory, getSessionCacheMetrics } from '../services/api/cacheStatsTracker.js'
+import { buildPromptCacheStatus } from '../utils/statusLinePromptCache.js'
+import { resolveStatusLineWorkspace } from '../utils/statusLineWorkspace.js'
 import { getRuntimeMainLoopModel, parseUserSpecifiedModel, renderModelName, type ModelName } from '../utils/model/model.js'
 import { stripVTControlCharacters as stripAnsi } from 'node:util'
 import { doesMostRecentAssistantMessageExceed200k, getCurrentUsage, getUnreportedSessionUsage } from '../utils/tokens.js'
@@ -114,7 +118,12 @@ export async function buildStatusSnapshot(
   // The CLI fills `appState.statusLineText` via its React statusline hook, but
   // the ACP agent runs headless (no React tree), so we execute the configured
   // statusline command here and strip ANSI codes for safe web rendering.
-  const statusLineText = await resolveCustomStatusLine(permissionMode, messages, mainLoopModel)
+  const statusLineText = await resolveCustomStatusLine(
+    permissionMode,
+    messages,
+    mainLoopModel,
+    appState,
+  )
 
   const worktree = getCurrentWorktreeSession()
 
@@ -188,6 +197,7 @@ async function resolveCustomStatusLine(
   permissionMode: PermissionMode,
   messages: Message[],
   mainLoopModel: ModelName,
+  appState: AppState,
 ): Promise<string | null> {
   // Most sessions have no custom statusline command; skip building the whole
   // hook payload for them. The statusline runs on every AppState change (150ms
@@ -200,7 +210,12 @@ async function resolveCustomStatusLine(
   if (statusLineInFlight) return statusLineInFlight
 
   statusLineInFlight = (async () => {
-    const value = await runCustomStatusLine(permissionMode, messages, mainLoopModel)
+    const value = await runCustomStatusLine(
+      permissionMode,
+      messages,
+      mainLoopModel,
+      appState,
+    )
     statusLineCache = { at: Date.now(), value }
     return value
   })().finally(() => {
@@ -213,6 +228,7 @@ async function runCustomStatusLine(
   permissionMode: PermissionMode,
   messages: Message[],
   mainLoopModel: ModelName,
+  appState: AppState,
 ): Promise<string | null> {
   try {
     const sessionId = getSessionId()
@@ -238,6 +254,12 @@ async function runCustomStatusLine(
       totalTokensAreEstimated: unreported ? true : undefined,
     }
 
+    const [workspace, promptCache] = await Promise.all([
+      resolveStatusLineWorkspace(getCwd()),
+      Promise.resolve(
+        buildPromptCacheStatus(getSessionCacheMetrics(), getCacheStatsHistory()),
+      ),
+    ])
     const result = await executeStatusLineCommand(
       {
         ...input,
@@ -247,6 +269,10 @@ async function runCustomStatusLine(
           current_dir: getCwd(),
           project_dir: getOriginalCwd(),
           added_dirs: [],
+          ...(workspace.gitWorktree !== undefined && {
+            git_worktree: workspace.gitWorktree,
+          }),
+          ...(workspace.repo !== undefined && { repo: workspace.repo }),
         },
         version: MACRO.VERSION,
         output_style: { name: outputStyleName },
@@ -267,6 +293,14 @@ async function runCustomStatusLine(
           remaining_percentage: contextPercentages.remaining,
         },
         exceeds_200k_tokens: doesMostRecentAssistantMessageExceed200k([...messages]),
+        fast_mode: appState.fastMode === true,
+        ...(modelSupportsEffort(runtimeModel) && {
+          effort: {
+            level: getDisplayedEffortLevel(runtimeModel, appState.effortValue),
+          },
+        }),
+        thinking: { enabled: appState.thinkingEnabled ?? shouldEnableThinkingByDefault() },
+        ...(promptCache !== undefined && { prompt_cache: promptCache }),
         ...(getIsRemoteMode() && { remote: { session_id: sessionId } }),
       },
       abort.signal,
