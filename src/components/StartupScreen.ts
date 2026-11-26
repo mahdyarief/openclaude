@@ -1,5 +1,5 @@
 /**
- * OpenClaude startup screen — filled-block text logo with sunset gradient.
+ * OpenClaude startup screen — static OC monogram with provider info.
  * Called once at CLI startup before the Ink UI renders.
  *
  * Addresses: https://github.com/rayss868/openclaude/issues/55
@@ -28,51 +28,10 @@ declare const MACRO: { VERSION: string; DISPLAY_VERSION?: string }
 const RESET = ANSI_RESET
 const DIM = ANSI_DIM
 
-function lerp(a: RGB, b: RGB, t: number): RGB {
-  return [
-    Math.round(a[0] + (b[0] - a[0]) * t),
-    Math.round(a[1] + (b[1] - a[1]) * t),
-    Math.round(a[2] + (b[2] - a[2]) * t),
-  ]
-}
-
-function gradAt(stops: readonly RGB[], t: number): RGB {
-  const c = Math.max(0, Math.min(1, t))
-  const s = c * (stops.length - 1)
-  const i = Math.floor(s)
-  if (i >= stops.length - 1) return stops[stops.length - 1]
-  return lerp(stops[i], stops[i + 1], s - i)
-}
-
-export function paintLine(text: string, stops: readonly RGB[], lineT: number): string {
-  let out = ''
-  for (let i = 0; i < text.length; i++) {
-    const t = text.length > 1 ? lineT * 0.5 + (i / (text.length - 1)) * 0.5 : lineT
-    const [r, g, b] = gradAt(stops, t)
-    out += `${ansiRgb(r, g, b)}${text[i]}`
-  }
-  return out + RESET
-}
-
-// ─── Filled Block Text Logo ───────────────────────────────────────────────────
-
-// ANSI Shadow figlet letterforms, one space between letters.
-const LOGO_OPEN = [
-  ' \u2588\u2588\u2588\u2588\u2588\u2588\u2557  \u2588\u2588\u2588\u2588\u2588\u2588\u2557  \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557 \u2588\u2588\u2588\u2557   \u2588\u2588\u2557',
-  '\u2588\u2588\u2554\u2550\u2550\u2550\u2588\u2588\u2557 \u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2557 \u2588\u2588\u2554\u2550\u2550\u2550\u2550\u255d \u2588\u2588\u2588\u2588\u2557  \u2588\u2588\u2551',
-  '\u2588\u2588\u2551   \u2588\u2588\u2551 \u2588\u2588\u2588\u2588\u2588\u2588\u2554\u255d \u2588\u2588\u2588\u2588\u2588\u2557   \u2588\u2588\u2554\u2588\u2588\u2557 \u2588\u2588\u2551',
-  '\u2588\u2588\u2551   \u2588\u2588\u2551 \u2588\u2588\u2554\u2550\u2550\u2550\u255d  \u2588\u2588\u2554\u2550\u2550\u255d   \u2588\u2588\u2551\u255a\u2588\u2588\u2557\u2588\u2588\u2551',
-  '\u255a\u2588\u2588\u2588\u2588\u2588\u2588\u2554\u255d \u2588\u2588\u2551      \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557 \u2588\u2588\u2551 \u255a\u2588\u2588\u2588\u2588\u2551',
-  ' \u255a\u2550\u2550\u2550\u2550\u2550\u255d  \u255a\u2550\u255d      \u255a\u2550\u2550\u2550\u2550\u2550\u2550\u255d \u255a\u2550\u255d  \u255a\u2550\u2550\u2550\u255d',
-]
-
-const LOGO_CLAUDE = [
-  ' \u2588\u2588\u2588\u2588\u2588\u2588\u2557 \u2588\u2588\u2557       \u2588\u2588\u2588\u2588\u2588\u2557  \u2588\u2588\u2557   \u2588\u2588\u2557 \u2588\u2588\u2588\u2588\u2588\u2588\u2557  \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557',
-  '\u2588\u2588\u2554\u2550\u2550\u2550\u2550\u255d \u2588\u2588\u2551      \u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2557 \u2588\u2588\u2551   \u2588\u2588\u2551 \u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2557 \u2588\u2588\u2554\u2550\u2550\u2550\u2550\u255d',
-  '\u2588\u2588\u2551      \u2588\u2588\u2551      \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2551 \u2588\u2588\u2551   \u2588\u2588\u2551 \u2588\u2588\u2551  \u2588\u2588\u2551 \u2588\u2588\u2588\u2588\u2588\u2557  ',
-  '\u2588\u2588\u2551      \u2588\u2588\u2551      \u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2551 \u2588\u2588\u2551   \u2588\u2588\u2551 \u2588\u2588\u2551  \u2588\u2588\u2551 \u2588\u2588\u2554\u2550\u2550\u255d  ',
-  '\u255a\u2588\u2588\u2588\u2588\u2588\u2588\u2557 \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557 \u2588\u2588\u2551  \u2588\u2588\u2551 \u255a\u2588\u2588\u2588\u2588\u2588\u2588\u2554\u255d \u2588\u2588\u2588\u2588\u2588\u2588\u2554\u255d \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557',
-  ' \u255a\u2550\u2550\u2550\u2550\u2550\u255d \u255a\u2550\u2550\u2550\u2550\u2550\u2550\u255d \u255a\u2550\u255d  \u255a\u2550\u255d  \u255a\u2550\u2550\u2550\u2550\u2550\u255d  \u255a\u2550\u2550\u2550\u2550\u2550\u255d  \u255a\u2550\u2550\u2550\u2550\u2550\u2550\u255d',
+const OC_MONOGRAM = [
+  '  ▄▀▀▀▄  ',
+  ' █ O C █ ',
+  '  ▀▄▄▄▀  ',
 ]
 
 // ─── Provider detection ───────────────────────────────────────────────────────
@@ -188,8 +147,6 @@ export function printStartupScreen(modelOverride?: string): void {
   const CREAM = palette.cream
   const DIMCOL = palette.dim
   const BORDER = palette.border
-  const GRAD = palette.gradient
-
   const p = detectProvider(modelOverride)
   const W = 62
   const columns = process.stdout.columns || 80
@@ -199,35 +156,11 @@ export function printStartupScreen(modelOverride?: string): void {
 
   out.push('')
 
-  // Gradient logo \u2014 OPEN and CLAUDE side by side on one centered row; falls
-  // back to the stacked two-block layout when the terminal is too narrow.
-  // Each block is centered as a unit (one pad per block) so rows stay aligned.
-  const open = LOGO_OPEN
-  const claude = LOGO_CLAUDE
-  const openWidth = Math.max(...open.map(row => row.length))
-  const claudeWidth = Math.max(...claude.map(row => row.length))
-  const oneRowWidth = openWidth + 2 + claudeWidth
-  const fitsOneRow = columns >= oneRowWidth
-  const logoLines = fitsOneRow
-    ? open.map((row, i) => ({
-        pad: centerPad(oneRowWidth),
-        text: `${row.padEnd(openWidth)}  ${claude[i]}`.trimEnd(),
-      }))
-    : [
-        ...open.map(row => ({ pad: centerPad(openWidth), text: row })),
-        { pad: '', text: '' },
-        ...claude.map(row => ({ pad: centerPad(claudeWidth), text: row.trimEnd() })),
-      ]
-  const total = logoLines.length
-  for (let i = 0; i < total; i++) {
-    const t = total > 1 ? i / (total - 1) : 0
-    if (logoLines[i].text === '') {
-      out.push('')
-    } else {
-      out.push(logoLines[i].pad + paintLine(logoLines[i].text, GRAD, t))
-    }
+  // Single-accent OC monogram, centered.
+  const monoWidth = Math.max(...OC_MONOGRAM.map(row => row.length))
+  for (const row of OC_MONOGRAM) {
+    out.push(centerPad(monoWidth) + ansiRgb(...ACCENT) + row + RESET)
   }
-
   out.push('')
 
   // Tagline
