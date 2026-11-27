@@ -135,49 +135,53 @@ function renderStartupScreen(columns: number): string {
 }
 
 const MONOGRAM = ['  ▄▀▀▀▄  ', ' █ O C █ ', '  ▀▄▄▄▀  ']
-const BOX_WIDTH = 62
 
 function monogramLines(plainOutput: string): string[] {
   return plainOutput.split('\n').filter(line => line.includes('▀') || line.includes('█ O C █'))
 }
 
-describe('printStartupScreen logo', () => {
-  test('renders a static OC monogram instead of the figlet banner', () => {
+describe('printStartupScreen layout', () => {
+  test('renders a static OC monogram inside a single compact block', () => {
     const out = renderStartupScreen(120)
     const logo = monogramLines(out)
+
     expect(logo).toHaveLength(3)
-    expect(logo[0]!.trim()).toBe('▄▀▀▀▄')
-    expect(logo[1]!.trim()).toBe('█ O C █')
-    expect(logo[2]!.trim()).toBe('▀▄▄▄▀')
+    for (const [index, row] of MONOGRAM.entries()) {
+      expect(logo[index]!).toContain(row.trim())
+      expect(logo[index]!.startsWith('│ ')).toBe(true)
+    }
     expect(out).not.toContain('██████╗')
   })
 
-  test('monogram and provider box are left-aligned on wide and narrow terminals', () => {
+  test('keeps all provider information in the block on wide and narrow terminals', () => {
     for (const columns of [120, 80]) {
       const out = renderStartupScreen(columns)
-      const lines = out.split('\n')
-      const logo = monogramLines(out)
-      expect(logo).toHaveLength(3)
-      expect(logo[0]!.startsWith(MONOGRAM[0])).toBe(true)
+      const lines = out.split('\n').filter(line => line.length > 0)
 
-      const boxTop = lines.find(line => line.trimStart().startsWith('╔'))
-      expect(boxTop!.indexOf('╔')).toBe(0)
-
+      expect(lines[0]!.indexOf('╭')).toBe(0)
+      expect(out).toContain('Provider')
+      expect(out).toContain('Model')
+      expect(out).toContain('Endpoint')
+      expect(out).toContain('Open terminal for any LLM')
+      expect(out).toContain('Ready — type /help to begin')
+      expect(out).toContain('openclaude v')
       for (const line of lines) {
         expect(line.length).toBeLessThanOrEqual(columns)
       }
     }
   })
 
-  test('tagline and version line are left-aligned', () => {
-    const out = renderStartupScreen(120)
-    const lines = out.split('\n')
+  test('anchors the block to the top-left and truncates long values', () => {
+    const out = renderStartupScreen(60)
+    const lines = out.split('\n').filter(line => line.length > 0)
 
-    const tagline = lines.find(line => line.includes('✦'))
-    expect(tagline!.startsWith('✦')).toBe(true)
-
-    const version = lines.find(line => line.includes('openclaude v'))
-    expect(version!.startsWith('openclaude')).toBe(true)
+    expect(lines[0]!.startsWith('╭')).toBe(true)
+    expect(lines.at(-1)!.startsWith('╰')).toBe(true)
+    expect(lines.every(line => /^[╭│├╰]/.test(line))).toBe(true)
+    expect(out).not.toContain('undefined')
+    for (const line of lines) {
+      expect(line.length).toBeLessThanOrEqual(60)
+    }
   })
 })
 

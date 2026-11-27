@@ -28,6 +28,10 @@ declare const MACRO: { VERSION: string; DISPLAY_VERSION?: string }
 const RESET = ANSI_RESET
 const DIM = ANSI_DIM
 
+function paint(text: string, color: readonly [number, number, number]): string {
+  return `${ansiRgb(...color)}${text}${RESET}`
+}
+
 const OC_MONOGRAM = [
   '  ▄▀▀▀▄  ',
   ' █ O C █ ',
@@ -129,13 +133,6 @@ export function detectProvider(modelOverride?: string): { name: string; model: s
   return { name, model: resolvedModel, baseUrl, isLocal }
 }
 
-// ─── Box drawing ──────────────────────────────────────────────────────────────
-
-function boxRow(content: string, width: number, rawLen: number, border: RGB): string {
-  const pad = Math.max(0, width - 2 - rawLen)
-  return `${ansiRgb(...border)}\u2502${RESET}${content}${' '.repeat(pad)}${ansiRgb(...border)}\u2502${RESET}`
-}
-
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 export function printStartupScreen(modelOverride?: string): void {
@@ -148,47 +145,93 @@ export function printStartupScreen(modelOverride?: string): void {
   const DIMCOL = palette.dim
   const BORDER = palette.border
   const p = detectProvider(modelOverride)
-  const W = 62
-  const out: string[] = []
+  const border = (s: string): string => `${ansiRgb(...BORDER)}${s}${RESET}`
+  const monoW = Math.max(...OC_MONOGRAM.map(row => row.length))
+  const gap = 2
+  const labelW = 9
+  const columns = process.stdout.columns || 80
+  const maxValue = Math.min(48, Math.max(16, columns - (monoW + gap + 4 + labelW + 2)))
+  const fit = (value: string): string =>
+    value.length > maxValue ? `${value.slice(0, maxValue - 1)}\u2026` : value
 
-  // Single-accent OC monogram, anchored top-left.
-  for (const row of OC_MONOGRAM) {
-    out.push(ansiRgb(...ACCENT) + row + RESET)
-  }
-  out.push('')
-
-  // Tagline
-  out.push(`${ansiRgb(...ACCENT)}\u2726${RESET} ${ansiRgb(...CREAM)}${BRAND_TAGLINE}${RESET} ${ansiRgb(...ACCENT)}\u2726${RESET}`)
-  out.push('')
-
-  // Provider info box
-  out.push(`${ansiRgb(...BORDER)}\u2554${'\u2550'.repeat(W - 2)}\u2557${RESET}`)
-
-  const lbl = (k: string, v: string, c: RGB = CREAM): [string, number] => {
-    const padK = k.padEnd(9)
-    return [` ${DIM}${ansiRgb(...DIMCOL)}${padK}${RESET} ${ansiRgb(...c)}${v}${RESET}`, ` ${padK} ${v}`.length]
-  }
+  const label = (k: string): string => `${k.padEnd(labelW)} `
+  const field = (k: string, v: string, c: RGB = CREAM): [string, string] => [
+    ` ${DIM}${ansiRgb(...DIMCOL)}${label(k)}${RESET}${ansiRgb(...c)}${v}${RESET}`,
+    ` ${label(k)}${v}`,
+  ]
 
   const provC: RGB = p.isLocal ? [130, 175, 130] : ACCENT
-  let [r, l] = lbl('Provider', p.name, provC)
-  out.push(boxRow(r, W, l, BORDER))
-  ;[r, l] = lbl('Model', p.model)
-  out.push(boxRow(r, W, l, BORDER))
-  const ep = p.baseUrl.length > 38 ? p.baseUrl.slice(0, 35) + '...' : p.baseUrl
-  ;[r, l] = lbl('Endpoint', ep)
-  out.push(boxRow(r, W, l, BORDER))
-
-  out.push(`${ansiRgb(...BORDER)}\u2560${'\u2550'.repeat(W - 2)}\u2563${RESET}`)
+  const [provider, providerPlain] = field('Provider', fit(p.name), provC)
+  const [model, modelPlain] = field('Model', fit(p.model))
+  const [endpoint, endpointPlain] = field('Endpoint', fit(p.baseUrl))
 
   const sC: RGB = p.isLocal ? [130, 175, 130] : ACCENT
   const sL = p.isLocal ? 'local' : 'cloud'
-  const sRow = ` ${ansiRgb(...sC)}\u25cf${RESET} ${DIM}${ansiRgb(...DIMCOL)}${sL}${RESET}    ${DIM}${ansiRgb(...DIMCOL)}Ready \u2014 type ${RESET}${ansiRgb(...ACCENT)}/help${RESET}${DIM}${ansiRgb(...DIMCOL)} to begin${RESET}`
-  const sLen = ` \u25cf ${sL}    Ready \u2014 type /help to begin`.length
-  out.push(boxRow(sRow, W, sLen, BORDER))
+  const status = ` ${ansiRgb(...sC)}\u25cf${RESET} ${DIM}${ansiRgb(...DIMCOL)}${sL}${RESET}    ${DIM}${ansiRgb(...DIMCOL)}Ready \u2014 type ${RESET}${ansiRgb(...ACCENT)}/help${RESET}${DIM}${ansiRgb(...DIMCOL)} to begin${RESET}`
+  const statusPlain = ` \u25cf ${sL}    Ready \u2014 type /help to begin`
 
-  out.push(`${ansiRgb(...BORDER)}\u255a${'\u2550'.repeat(W - 2)}\u255d${RESET}`)
-  out.push(`${DIM}${ansiRgb(...DIMCOL)}openclaude ${RESET}${ansiRgb(...ACCENT)}v${MACRO.DISPLAY_VERSION ?? MACRO.VERSION}${RESET}`)
-  out.push('')
+  const tagline = `${ansiRgb(...ACCENT)}\u2726${RESET} ${ansiRgb(...CREAM)}${BRAND_TAGLINE}${RESET} ${ansiRgb(...ACCENT)}\u2726${RESET}`
+  const taglinePlain = `\u2726 ${BRAND_TAGLINE} \u2726`
+  const versionText = `openclaude v${MACRO.DISPLAY_VERSION ?? MACRO.VERSION}`
+  const contentW = Math.max(
+    taglinePlain.length,
+    providerPlain.length,
+    modelPlain.length,
+    endpointPlain.length,
+    statusPlain.length,
+  )
+  const W = monoW + gap + contentW + 4
+  const out: string[] = []
+
+  // Single-cell top rule carrying the version as a quiet title.
+  out.push(
+    border('\u256d') +
+      border('\u2500') +
+      ' ' +
+      paint(versionText, ACCENT) +
+      ' ' +
+      border('\u2500'.repeat(Math.max(0, W - versionText.length - 5)) + '\u256e'),
+  )
+
+  // Monogram sits in the left column; every detail stays on the right.
+  const rows: Array<[string, string, string]> = [
+    [OC_MONOGRAM[0]!, tagline, taglinePlain],
+    [OC_MONOGRAM[1]!, provider, providerPlain],
+    [OC_MONOGRAM[2]!, model, modelPlain],
+    ['', endpoint, endpointPlain],
+  ]
+  for (const [art, styled, plain] of rows) {
+    const artCell = art ? ansiRgb(...ACCENT) + art.padEnd(monoW) + RESET : ' '.repeat(monoW)
+    out.push(
+      border('\u2502') +
+        ' ' +
+        artCell +
+        ' '.repeat(gap) +
+        styled +
+        ' '.repeat(contentW - plain.length) +
+        ' ' +
+        border('\u2502'),
+    )
+  }
+
+  out.push(
+    border(
+      '\u251c' +
+        '\u2500'.repeat(monoW + gap + 1) +
+        '\u253c' +
+        '\u2500'.repeat(contentW) +
+        '\u2524',
+    ),
+  )
+  out.push(
+    border('\u2502') +
+      ' '.repeat(1 + monoW + gap) +
+      status +
+      ' '.repeat(contentW - statusPlain.length) +
+      ' ' +
+      border('\u2502'),
+  )
+  out.push(border('\u2570' + '\u2500'.repeat(W - 2) + '\u256f'))
 
   process.stdout.write(out.join('\n') + '\n')
 }
