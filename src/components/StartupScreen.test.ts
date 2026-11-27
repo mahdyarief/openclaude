@@ -148,7 +148,7 @@ describe('printStartupScreen layout', () => {
     expect(logo).toHaveLength(3)
     for (const [index, row] of MONOGRAM.entries()) {
       expect(logo[index]!).toContain(row.trim())
-      expect(logo[index]!.startsWith('│ ')).toBe(true)
+      expect(logo[index]!.trimStart().startsWith('│ ')).toBe(true)
     }
     expect(out).not.toContain('██████╗')
   })
@@ -158,7 +158,7 @@ describe('printStartupScreen layout', () => {
       const out = renderStartupScreen(columns)
       const lines = out.split('\n').filter(line => line.length > 0)
 
-      expect(lines[0]!.indexOf('╭')).toBe(0)
+      expect(lines[0]!.trimStart().startsWith('╭')).toBe(true)
       expect(out).toContain('Provider')
       expect(out).toContain('Model')
       expect(out).toContain('Endpoint')
@@ -171,19 +171,28 @@ describe('printStartupScreen layout', () => {
     }
   })
 
-  test('anchors the block to the top-left and truncates long values', () => {
+  test('centers the block and truncates long values', () => {
     const out = renderStartupScreen(60)
     const lines = out.split('\n').filter(line => line.length > 0)
 
-    expect(lines[0]!.startsWith('╭')).toBe(true)
-    expect(lines.at(-1)!.startsWith('╰')).toBe(true)
+    expect(lines[0]!.trimStart().startsWith('╭')).toBe(true)
+    expect(lines.at(-1)!.trimStart().startsWith('╰')).toBe(true)
     expect(lines[0]!).not.toContain('openclaude v')
     expect(lines.at(-1)!).toContain('openclaude v')
-    expect(lines.every(line => /^[╭│├╰]/.test(line))).toBe(true)
+    expect(lines.every(line => /^\s*[╭│├╰]/.test(line))).toBe(true)
     expect(out).not.toContain('undefined')
     for (const line of lines) {
       expect(line.length).toBeLessThanOrEqual(60)
     }
+
+    // Every row shares one left margin and one right edge, so the block
+    // stays a single closed rectangle.
+    const margins = new Set(lines.map(line => line.length - line.trimStart().length))
+    expect(margins.size).toBe(1)
+    expect(new Set(lines.map(line => line.length)).size).toBe(1)
+    // Centered, not pinned to the edge.
+    const [margin] = [...margins]
+    expect(margin).toBeGreaterThan(0)
   })
 })
 

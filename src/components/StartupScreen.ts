@@ -182,10 +182,12 @@ export function printStartupScreen(modelOverride?: string): void {
     versionText.length + 3,
   )
   const W = monoW + gap + contentW + 4
+  const pad = W < columns ? Math.floor((columns - W) / 2) : 0
+  const indent = ' '.repeat(pad)
   const out: string[] = []
 
   // Top rule stays quiet; the version rides on the bottom rule.
-  out.push(border('\u256d' + '\u2500'.repeat(W - 2) + '\u256e'))
+  out.push(indent + border('\u256d' + '\u2500'.repeat(W - 2) + '\u256e'))
 
   // Monogram sits in the left column; every detail stays on the right.
   const rows: Array<[string, string, string]> = [
@@ -197,7 +199,8 @@ export function printStartupScreen(modelOverride?: string): void {
   for (const [art, styled, plain] of rows) {
     const artCell = art ? ansiRgb(...ACCENT) + art.padEnd(monoW) + RESET : ' '.repeat(monoW)
     out.push(
-      border('\u2502') +
+      indent +
+        border('\u2502') +
         ' ' +
         artCell +
         ' '.repeat(gap) +
@@ -209,16 +212,18 @@ export function printStartupScreen(modelOverride?: string): void {
   }
 
   out.push(
-    border(
-      '\u251c' +
-        '\u2500'.repeat(monoW + gap + 1) +
-        '\u253c' +
-        '\u2500'.repeat(contentW) +
-        '\u2524',
-    ),
+    indent +
+      border(
+        '\u251c' +
+          '\u2500'.repeat(monoW + gap + 1) +
+          '\u253c' +
+          '\u2500'.repeat(contentW) +
+          '\u2524',
+      ),
   )
   out.push(
-    border('\u2502') +
+    indent +
+      border('\u2502') +
       ' '.repeat(1 + monoW + gap) +
       status +
       ' '.repeat(contentW - statusPlain.length) +
@@ -227,12 +232,13 @@ export function printStartupScreen(modelOverride?: string): void {
   )
   const versionStem = '\u2500'.repeat(monoW + gap + 4)
   out.push(
-    border('\u2570') +
+    indent +
+      border('\u2570') +
       versionStem +
       ' ' +
       paint(versionText, ACCENT) +
       ' ' +
-      border('\u2500'.repeat(Math.max(0, W - versionStem.length - versionText.length - 3)) + '\u256f'),
+      border('\u2500'.repeat(Math.max(0, W - versionStem.length - versionText.length - 4)) + '\u256f'),
   )
 
   process.stdout.write(out.join('\n') + '\n')
