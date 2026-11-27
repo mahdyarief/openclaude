@@ -115,7 +115,7 @@ export function _resetTmuxControlModeProbeForTesting(): void {
  *   CLAUDE_CODE_NO_FLICKER=1  → always on (overrides tmux -CC guard too)
  *   tmux -CC detected         → off (corrupts terminal state)
  *   config flickerFreeMode    → on/off per user preference
- *   default                   → on
+ *   default                   → off (terminal scrollback + startup screen stay visible)
  *
  * Mouse hover/click is not a separate toggle: it rides on alt-screen tracking.
  * Claude Code 2.1.331 wires it the same way — `<AlternateScreen
@@ -146,7 +146,7 @@ export function isFullscreenEnvEnabled(): boolean {
   // `/config` without having to set an env var.
   const configValue = getGlobalConfig().flickerFreeMode
   if (configValue !== undefined) return configValue
-  return true
+  return false
 }
 
 /**

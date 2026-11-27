@@ -268,8 +268,8 @@ export function computeUnseenDivider(messages: readonly Message[], dividerIndex:
  * Outside fullscreen mode, renders content sequentially so the existing
  * main-screen scrollback rendering works unchanged.
  *
- * Fullscreen mode defaults on for ants (CLAUDE_CODE_NO_FLICKER=0 to opt out)
- * and off for external users (CLAUDE_CODE_NO_FLICKER=1 to opt in).
+ * Fullscreen mode defaults off so the startup screen remains visible in
+ * terminal scrollback (CLAUDE_CODE_NO_FLICKER=1 to opt in).
  * The <AlternateScreen> wrapper
  * (alt buffer + mouse tracking + height constraint) lives at REPL's root
  * so nothing can accidentally render outside it.
