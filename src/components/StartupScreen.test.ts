@@ -152,39 +152,32 @@ describe('printStartupScreen logo', () => {
     expect(out).not.toContain('██████╗')
   })
 
-  test('monogram is centered on wide and narrow terminals', () => {
+  test('monogram and provider box are left-aligned on wide and narrow terminals', () => {
     for (const columns of [120, 80]) {
       const out = renderStartupScreen(columns)
+      const lines = out.split('\n')
       const logo = monogramLines(out)
       expect(logo).toHaveLength(3)
-      const monoWidth = Math.max(...MONOGRAM.map(row => row.length))
-      const pad = ' '.repeat(Math.floor((columns - monoWidth) / 2))
-      expect(logo[0]!.startsWith(`${pad}${MONOGRAM[0]}`)).toBe(true)
-      for (const line of out.split('\n')) {
+      expect(logo[0]!.startsWith(MONOGRAM[0])).toBe(true)
+
+      const boxTop = lines.find(line => line.trimStart().startsWith('╔'))
+      expect(boxTop!.indexOf('╔')).toBe(0)
+
+      for (const line of lines) {
         expect(line.length).toBeLessThanOrEqual(columns)
       }
     }
   })
 
-  test('provider box, tagline, and version line are centered', () => {
+  test('tagline and version line are left-aligned', () => {
     const out = renderStartupScreen(120)
     const lines = out.split('\n')
 
-    const boxTop = lines.find(line => line.trimStart().startsWith('╔'))
-    expect(boxTop).toBeDefined()
-    expect(boxTop!.indexOf('╔')).toBe(Math.floor((120 - BOX_WIDTH) / 2))
-
     const tagline = lines.find(line => line.includes('✦'))
-    expect(tagline).toBeDefined()
-    expect(tagline!.indexOf('✦')).toBe(
-      Math.floor((120 - tagline!.trim().length) / 2),
-    )
+    expect(tagline!.startsWith('✦')).toBe(true)
 
     const version = lines.find(line => line.includes('openclaude v'))
-    expect(version).toBeDefined()
-    expect(version!.indexOf('openclaude')).toBe(
-      Math.floor((120 - version!.trim().length) / 2),
-    )
+    expect(version!.startsWith('openclaude')).toBe(true)
   })
 })
 

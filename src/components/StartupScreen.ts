@@ -149,27 +149,20 @@ export function printStartupScreen(modelOverride?: string): void {
   const BORDER = palette.border
   const p = detectProvider(modelOverride)
   const W = 62
-  const columns = process.stdout.columns || 80
-  const centerPad = (visibleLen: number): string =>
-    ' '.repeat(Math.max(0, Math.floor((columns - visibleLen) / 2)))
   const out: string[] = []
 
-  out.push('')
-
-  // Single-accent OC monogram, centered.
-  const monoWidth = Math.max(...OC_MONOGRAM.map(row => row.length))
+  // Single-accent OC monogram, anchored top-left.
   for (const row of OC_MONOGRAM) {
-    out.push(centerPad(monoWidth) + ansiRgb(...ACCENT) + row + RESET)
+    out.push(ansiRgb(...ACCENT) + row + RESET)
   }
   out.push('')
 
   // Tagline
-  out.push(`${centerPad(BRAND_TAGLINE.length + 4)}${ansiRgb(...ACCENT)}\u2726${RESET} ${ansiRgb(...CREAM)}${BRAND_TAGLINE}${RESET} ${ansiRgb(...ACCENT)}\u2726${RESET}`)
+  out.push(`${ansiRgb(...ACCENT)}\u2726${RESET} ${ansiRgb(...CREAM)}${BRAND_TAGLINE}${RESET} ${ansiRgb(...ACCENT)}\u2726${RESET}`)
   out.push('')
 
   // Provider info box
-  const boxPad = centerPad(W)
-  out.push(`${boxPad}${ansiRgb(...BORDER)}\u2554${'\u2550'.repeat(W - 2)}\u2557${RESET}`)
+  out.push(`${ansiRgb(...BORDER)}\u2554${'\u2550'.repeat(W - 2)}\u2557${RESET}`)
 
   const lbl = (k: string, v: string, c: RGB = CREAM): [string, number] => {
     const padK = k.padEnd(9)
@@ -178,24 +171,23 @@ export function printStartupScreen(modelOverride?: string): void {
 
   const provC: RGB = p.isLocal ? [130, 175, 130] : ACCENT
   let [r, l] = lbl('Provider', p.name, provC)
-  out.push(boxPad + boxRow(r, W, l, BORDER))
+  out.push(boxRow(r, W, l, BORDER))
   ;[r, l] = lbl('Model', p.model)
-  out.push(boxPad + boxRow(r, W, l, BORDER))
+  out.push(boxRow(r, W, l, BORDER))
   const ep = p.baseUrl.length > 38 ? p.baseUrl.slice(0, 35) + '...' : p.baseUrl
   ;[r, l] = lbl('Endpoint', ep)
-  out.push(boxPad + boxRow(r, W, l, BORDER))
+  out.push(boxRow(r, W, l, BORDER))
 
-  out.push(`${boxPad}${ansiRgb(...BORDER)}\u2560${'\u2550'.repeat(W - 2)}\u2563${RESET}`)
+  out.push(`${ansiRgb(...BORDER)}\u2560${'\u2550'.repeat(W - 2)}\u2563${RESET}`)
 
   const sC: RGB = p.isLocal ? [130, 175, 130] : ACCENT
   const sL = p.isLocal ? 'local' : 'cloud'
   const sRow = ` ${ansiRgb(...sC)}\u25cf${RESET} ${DIM}${ansiRgb(...DIMCOL)}${sL}${RESET}    ${DIM}${ansiRgb(...DIMCOL)}Ready \u2014 type ${RESET}${ansiRgb(...ACCENT)}/help${RESET}${DIM}${ansiRgb(...DIMCOL)} to begin${RESET}`
   const sLen = ` \u25cf ${sL}    Ready \u2014 type /help to begin`.length
-  out.push(boxPad + boxRow(sRow, W, sLen, BORDER))
+  out.push(boxRow(sRow, W, sLen, BORDER))
 
-  out.push(`${boxPad}${ansiRgb(...BORDER)}\u255a${'\u2550'.repeat(W - 2)}\u255d${RESET}`)
-  const versionText = `openclaude v${MACRO.DISPLAY_VERSION ?? MACRO.VERSION}`
-  out.push(`${centerPad(versionText.length)}${DIM}${ansiRgb(...DIMCOL)}openclaude ${RESET}${ansiRgb(...ACCENT)}v${MACRO.DISPLAY_VERSION ?? MACRO.VERSION}${RESET}`)
+  out.push(`${ansiRgb(...BORDER)}\u255a${'\u2550'.repeat(W - 2)}\u255d${RESET}`)
+  out.push(`${DIM}${ansiRgb(...DIMCOL)}openclaude ${RESET}${ansiRgb(...ACCENT)}v${MACRO.DISPLAY_VERSION ?? MACRO.VERSION}${RESET}`)
   out.push('')
 
   process.stdout.write(out.join('\n') + '\n')

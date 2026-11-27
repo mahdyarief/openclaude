@@ -9,7 +9,7 @@ const RULE = '─'.repeat(WELCOME_V2_WIDTH)
 
 export function WelcomeV2(): React.ReactElement {
   return (
-    <Box width={WELCOME_V2_WIDTH} flexDirection="column" alignItems="center">
+    <Box width={WELCOME_V2_WIDTH} flexDirection="column" alignItems="flex-start">
       <Text>
         <Text bold color="brand">
           Welcome to {BRAND_NAME}
