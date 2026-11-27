@@ -1,0 +1,309 @@
+import { useState, type ReactNode } from 'react'
+import type {
+  AgentQuestion,
+  ConnectionStatus,
+  ConversationMessage,
+  Plan,
+  SessionConfigOption,
+  StopReason,
+  ToolCall,
+} from '@openclaude-studio/acp'
+import { LoadingState, QuestionPanel } from '../beautifui/index.js'
+import { cn } from '../lib/cn.js'
+import { Button } from '../shadcn/button.js'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '../shadcn/dialog.js'
+import { Skeleton } from '../shadcn/skeleton.js'
+import { MessageList } from './MessageList.js'
+import {
+  SessionActivity,
+  type SessionCompactionSummary,
+  type SessionNotice,
+} from './SessionActivity.js'
+
+export type ChatPaneProps = {
+  messages: ConversationMessage[]
+  toolCalls: Record<string, ToolCall>
+  streaming: boolean
+  /** waiting for the first agent chunk after a prompt was sent */
+  awaiting?: boolean
+  /** reading the stored transcript back from the bridge on a session/load */
+  loadingHistory?: boolean
+  status: ConnectionStatus
+  stopReason: StopReason | null
+  /** pending interactive questions from the agent (`AskUserQuestion`) */
+  questions?: AgentQuestion[] | null
+  /** answers the user collected from the questions */
+  onAnswer?: (answers: Record<string, string>) => void
+  /** dismiss the pending questions without answering */
+  onDismissQuestions?: () => void
+  /** re-handshake from scratch (new WebSocket + session handshake/load) */
+  onReload?: () => void
+  /** end the live connection; the transcript stays visible */
+  onEnd?: () => void
+  /** true while a reload is re-establishing the handshake */
+  reloading?: boolean
+  /** true after the user ended the session */
+  ended?: boolean
+  /** dismissible agent notice from the latest session update */
+  notice?: SessionNotice | null | undefined
+  /** called when the user dismisses the notice */
+  onDismissNotice?: (() => void) | undefined
+  /** the agent's current execution plan */
+  plan?: Plan | null | undefined
+  /** context compaction events reported by the agent */
+  compactions?: SessionCompactionSummary[] | undefined
+  /** configurable session options advertised by the agent */
+  configOptions?: SessionConfigOption[] | undefined
+  /** change a configurable session option */
+  onConfigOptionChange?: ((optionId: string, value: string | boolean) => void) | undefined
+  /** agent-supplied session title, shown in the status header when available */
+  sessionTitle?: string | null | undefined
+  /** fork the current stored session into a new one */
+  onFork?: (() => void) | undefined
+  /** delete the current stored session from disk */
+  onDelete?: (() => void) | undefined
+  /** true while a fork request is in flight */
+  forking?: boolean | undefined
+  /** true while a delete request is in flight */
+  deleting?: boolean | undefined
+  /** surfaced when a fork or delete request fails */
+  actionError?: string | null | undefined
+  /** composer pinned to the bottom */
+  children?: ReactNode
+}
+
+const STOP_LABELS: Record<StopReason, string> = {
+  end_turn: 'Finished',
+  max_tokens: 'Hit token limit',
+  max_turn_requests: 'Hit turn limit',
+  refusal: 'Refused',
+  cancelled: 'Cancelled',
+}
+
+// One line of status text per connection state, so the pane is never ambiguous:
+// ready/connecting are normal, idle is "asleep" (reloaded on focus), dead is
+// unrecoverable. The composer stays usable in `idle` because the next prompt
+// reattaches automatically.
+const STATUS_LABELS: Record<ConnectionStatus, string> = {
+  ready: 'Connected',
+  connecting: 'Connecting to agent…',
+  idle: 'Asleep — connection paused to save resources',
+  dead: 'Disconnected',
+}
+
+const STATUS_TONE: Record<ConnectionStatus, { dot: string; tint: string }> = {
+  ready: { dot: 'bg-green', tint: 'bg-green-tint' },
+  connecting: { dot: 'animate-pulse bg-orange', tint: 'bg-orange-tint' },
+  idle: { dot: 'bg-ink-3', tint: 'bg-inset' },
+  dead: { dot: 'bg-red', tint: 'bg-red-tint' },
+}
+
+export function ChatPane({
+  messages,
+  toolCalls,
+  streaming,
+  awaiting,
+  loadingHistory,
+  status,
+  stopReason,
+  questions,
+  onAnswer,
+  onDismissQuestions,
+  onReload,
+  onEnd,
+  reloading,
+  ended,
+  notice,
+  onDismissNotice,
+  plan,
+  compactions,
+  configOptions,
+  onConfigOptionChange,
+  sessionTitle,
+  onFork,
+  onDelete,
+  forking = false,
+  deleting = false,
+  actionError,
+  children,
+}: ChatPaneProps) {
+  const stopLabel = stopReason ? (STOP_LABELS[stopReason] ?? stopReason) : null
+  const tone = STATUS_TONE[status]
+  const [confirmDelete, setConfirmDelete] = useState(false)
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div
+        role="status"
+        className={cn(
+          'flex shrink-0 items-center gap-2 border-b border-line px-4 py-1.5 text-[12px] text-ink-2',
+          tone.tint,
+        )}
+      >
+        <span aria-hidden className={cn('size-1.5 rounded-full', tone.dot)} />
+        <span className="truncate">{STATUS_LABELS[status]}</span>
+        {sessionTitle ? (
+          <span className="ml-1 truncate text-ink-3" title={sessionTitle}>
+            Session: {sessionTitle}
+          </span>
+        ) : null}
+        {status === 'idle' ? (
+          <Button
+            variant="quiet"
+            size="sm"
+            onClick={onReload}
+            disabled={reloading}
+            className="ml-auto h-5 rounded-[var(--radius-control)] px-1.5 text-[11px]"
+          >
+            {reloading ? 'Waking…' : 'Wake'}
+          </Button>
+        ) : null}
+        {status === 'dead' ? (
+          <Button
+            variant="quiet"
+            size="sm"
+            onClick={onReload}
+            disabled={reloading}
+            className="ml-auto h-5 rounded-[var(--radius-control)] px-1.5 text-[11px]"
+          >
+            {reloading ? 'Reconnecting…' : 'Reconnect'}
+          </Button>
+        ) : null}
+        {!ended && (status === 'ready' || status === 'idle') ? (
+          <Button
+            variant="quiet"
+            size="sm"
+            onClick={onEnd}
+            className="ml-2 h-5 rounded-[var(--radius-control)] px-1.5 text-[11px]"
+          >
+            End session
+          </Button>
+        ) : null}
+        {!ended && status !== 'connecting' && (onFork || onDelete) ? (
+          <>
+            {onFork ? (
+              <Button
+                variant="quiet"
+                size="sm"
+                onClick={onFork}
+                disabled={forking}
+                className="ml-2 h-5 rounded-[var(--radius-control)] px-1.5 text-[11px]"
+              >
+                {forking ? 'Forking…' : 'Fork'}
+              </Button>
+            ) : null}
+            {onDelete ? (
+              <Button
+                variant="quiet"
+                size="sm"
+                onClick={() => setConfirmDelete(true)}
+                disabled={deleting}
+                className="ml-1 h-5 rounded-[var(--radius-control)] px-1.5 text-[11px] text-red"
+              >
+                {deleting ? 'Deleting…' : 'Delete'}
+              </Button>
+            ) : null}
+          </>
+        ) : null}
+        {ended && status === 'idle' ? (
+          <span className="ml-2 text-[11px] text-ink-3">Ended</span>
+        ) : null}
+        {actionError ? (
+          <span role="alert" className="ml-2 min-w-0 truncate text-[11px] text-red" title={actionError}>
+            {actionError}
+          </span>
+        ) : null}
+      </div>
+
+      <Dialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete this session?</DialogTitle>
+            <DialogDescription>
+              This permanently removes the stored conversation from disk. It cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="quiet" size="sm" onClick={() => setConfirmDelete(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
+              onClick={() => {
+                setConfirmDelete(false)
+                onDelete?.()
+              }}
+            >
+              Delete session
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <SessionActivity
+        notice={notice}
+        onDismissNotice={onDismissNotice}
+        plan={plan}
+        compactions={compactions}
+        configOptions={configOptions}
+        onConfigOptionChange={onConfigOptionChange}
+      />
+
+      <div className="min-h-0 flex-1 relative">
+        {loadingHistory ? (
+          <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-3 py-5 sm:px-6 sm:py-6">
+            <div className="flex items-center gap-2 pb-2">
+              <LoadingState variant="Dots" labels={{ label: 'Loading conversation' }} />
+              <span className="text-[12px] text-ink-3">Loading conversation…</span>
+            </div>
+            {[0, 1, 2].map(index => (
+              <div key={index} className="flex flex-col gap-2">
+                <div className="openclaude-prose">
+                  <Skeleton className="h-4 w-[70%]" />
+                  <Skeleton className="mt-2 h-4 w-[90%]" />
+                  <Skeleton className="mt-2 h-4 w-[55%]" />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <MessageList messages={messages} toolCalls={toolCalls} streaming={streaming} />
+        )}
+        {awaiting ? (
+          <div className="absolute inset-x-0 bottom-0 flex justify-center pointer-events-none pb-3">
+            <div className="flex items-center gap-2 rounded-[var(--radius-card)] border border-line bg-surface px-4 py-2 shadow-[var(--shadow-card)]">
+              <LoadingState variant="Dots" labels={{ label: 'OpenClaude is thinking' }} />
+              <span className="text-[12px] text-ink-3">OpenClaude is thinking…</span>
+            </div>
+          </div>
+        ) : null}
+      </div>
+
+      <div className="shrink-0">
+        {stopLabel && !streaming && !awaiting ? (
+          <p className="mx-auto w-full max-w-3xl px-3 text-[11.5px] text-ink-3 sm:px-6">
+            Stopped: {stopLabel}
+          </p>
+        ) : null}
+        {questions && questions.length > 0 ? (
+          <div className="mx-auto w-full max-w-3xl px-3 pb-3 sm:px-6">
+            <QuestionPanel
+              questions={questions}
+              onSubmit={answers => onAnswer?.(answers)}
+              onCancel={onDismissQuestions}
+            />
+          </div>
+        ) : null}
+        <div className={cn('mx-auto w-full max-w-3xl px-3 pb-3 pt-1 sm:px-6')}>{children}</div>
+      </div>
+    </div>
+  )
+}

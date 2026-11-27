@@ -1,0 +1,8 @@
+@import 'tailwindcss';
+/* Tailwind v4 scans only the app root by default. The shared UI package sits
+ * outside apps/web, so without this directive its utility classes — the
+ * AppShell grid and panel layout in particular — are never generated and the
+ * page renders unstyled. Path is relative to this file. */
+@source '../../../packages/ui/src';
+@import '@openclaude-studio/ui/theme.css';
+@import '@openclaude-studio/ui/beautifui/foundation.css';

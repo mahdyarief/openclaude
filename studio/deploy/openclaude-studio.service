@@ -1,0 +1,34 @@
+[Unit]
+Description=OpenClaude Studio bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Studio is nested under the openclaude repo. %h expands to this user's home, so
+# nothing below assumes a specific account or absolute path.
+WorkingDirectory=%h/code/openclaude/studio
+EnvironmentFile=%h/.config/openclaude-studio/bridge.env
+# Bind address comes from OPENCLAUDE_BRIDGE_HOST in bridge.env.
+ExecStart=/usr/bin/node packages/bridge/dist/cli.js
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+# Writable: openclaude runtime data/config (session JSONL under %h/.openclaude),
+# studio UI state, and the repo tree (pnpm/bun rebuilds write node_modules and
+# dist under %h/code/openclaude).
+ReadWritePaths=%h/.local/share/openclaude %h/.config/openclaude %h/.openclaude %h/.config/openclaude-studio %h/code/openclaude
+# Cap the bridge's memory so a runaway agent/MCP child cannot drive the host
+# into swap thrashing. The bridge process is small; agent children are the
+# consumers, and they inherit this cgroup. Override per host via a drop-in if
+# the box is smaller/larger than 16 GB.
+MemoryMax=8G
+MemorySwapMax=2G
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

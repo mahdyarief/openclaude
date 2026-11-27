@@ -7,12 +7,15 @@
 
 import { randomUUID } from 'crypto'
 import { dirname } from 'path'
+import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import type { CallToolResult, ToolAnnotations } from '@modelcontextprotocol/sdk/types.js'
 import { QueryEngine } from '../../QueryEngine.js'
 import {
   getDefaultAppState,
   type AppState,
 } from '../../state/AppStateStore.js'
+import { applyPermissionUpdatesToLiveContext } from '../../utils/permissions/permissionSetup.js'
+import { persistPermissionUpdates } from '../../utils/permissions/PermissionUpdate.js'
 import { createStore, type Store } from '../../state/store.js'
 import {
   type ToolPermissionContext,
@@ -147,13 +150,25 @@ export interface SDKSession {
   /** Unique identifier for this session. */
   sessionId: string
   /** Send a message and yield responses as an AsyncIterable of SDKMessage. */
-  sendMessage(content: string): AsyncIterable<SDKMessage>
+  sendMessage(content: string | ContentBlockParam[]): AsyncIterable<SDKMessage>
   /** Return all messages accumulated so far in this session. */
   getMessages(): SDKMessage[]
+  /** Return the session's live AppState snapshot (permission mode, tasks, etc.).
+   *  Read-only — mutating it here would desync the engine's view. */
+  getAppState(): AppState
+  /**
+   * Subscribe to live AppState changes for this session. The listener fires
+   * after every `setState` call; the returned function stops it. Studio uses
+   * this to push a statusline update instead of polling.
+   */
+  subscribeAppState(listener: () => void): () => void
   /** Abort the current in-flight query. */
   interrupt(): void
-  /** Close the session and release resources. */
-  close(): void
+  /** Apply a new permission mode and refresh the session's tools. */
+  setPermissionMode(mode: QueryPermissionMode): Promise<void>
+  /** Close the session and release resources. Resolves after MCP child
+   * processes have been disconnected. */
+  close(): Promise<void>
   /**
    * Respond to a pending permission prompt asynchronously.
    * Use this when no canUseTool callback was provided — the SDK emits a
@@ -213,6 +228,7 @@ class SDKSessionImpl implements SDKSession {
   private agentsLoaded = false
   private mcpServers?: Record<string, unknown>
   private mcpConnected = false
+  private sdkMcpTools: Parameters<typeof assembleToolPool>[1] = []
   private pendingPermissionPrompts = new Map<string, {
     resolve: (decision: PermissionResolveDecision) => void
   }>()
@@ -260,13 +276,16 @@ class SDKSessionImpl implements SDKSession {
     return this._sessionId
   }
 
-  async *sendMessage(content: string): AsyncIterable<SDKMessage> {
+  async *sendMessage(content: string | ContentBlockParam[]): AsyncIterable<SDKMessage> {
     const sdkContext = {
       sessionId: this._sessionId as SessionId,
       sessionProjectDir: this._sessionProjectDir,
       cwd: this.options.cwd,
       originalCwd: this.options.cwd,
     }
+    const prompt = typeof content === 'string'
+      ? [{ type: 'text' as const, text: content }]
+      : content
 
     const self = this
     const inner = bindSdkContextToAsyncGenerator(
@@ -347,6 +366,7 @@ class SDKSessionImpl implements SDKSession {
         if (!self.mcpConnected && self.mcpServers && Object.keys(self.mcpServers).length > 0) {
           try {
             const { clients: mcpClients, tools: mcpTools } = await connectSdkMcpServers(self.mcpServers)
+            self.sdkMcpTools = mcpTools
             if (mcpClients.length > 0) {
               self.engine.setMcpClients(mcpClients)
             }
@@ -367,7 +387,7 @@ class SDKSessionImpl implements SDKSession {
         try {
           if (self._abortController?.signal.aborted) return
           yield* self.drainAgentFailureQueue()
-          for await (const engineMsg of self.engine.submitMessage(content)) {
+          for await (const engineMsg of self.engine.submitMessage(prompt)) {
             if (self._abortController?.signal.aborted) break
             yield engineMsg
             yield* self.drainTimeoutQueue()
@@ -390,8 +410,33 @@ class SDKSessionImpl implements SDKSession {
     return this.engine.getMessages().map(msg => mapMessageToSDK(msg as Record<string, unknown>))
   }
 
+  getAppState(): AppState {
+    return this.appStateStore.getState()
+  }
+
+  subscribeAppState(listener: () => void): () => void {
+    return this.appStateStore.subscribe(listener)
+  }
+
   interrupt(): void {
     this.interruptWithSource('sdk_interrupt')
+  }
+
+  async setPermissionMode(mode: QueryPermissionMode): Promise<void> {
+    const current = this.appStateStore.getState().toolPermissionContext
+    const newPermissionContext = buildPermissionContext({
+      cwd: this.options.cwd,
+      permissionMode: mode,
+      additionalDirectories: Array.from(current.additionalWorkingDirectories.keys()),
+      allowDangerouslySkipPermissions:
+        current.isBypassPermissionsModeAvailable || this.options.allowDangerouslySkipPermissions,
+      disallowedTools: this.options.disallowedTools,
+    })
+    this.appStateStore.setState(prev => ({
+      ...prev,
+      toolPermissionContext: newPermissionContext,
+    }))
+    this.engine.updateTools(assembleToolPool(newPermissionContext, this.sdkMcpTools))
   }
 
   private interruptWithSource(source: string): void {
@@ -412,23 +457,26 @@ class SDKSessionImpl implements SDKSession {
     this.pendingPermissionPrompts.clear()
   }
 
-  close(): void {
+  async close(): Promise<void> {
     const wrapperController = this._abortController
     this.interruptWithSource('sdk_close')
     if (wrapperController) {
       requestSdkRootAbort(wrapperController, 'sdk_close', 'sdk_session')
     }
     this._abortController = null
-    // Disconnect MCP clients to prevent resource leaks
+    // Disconnect MCP clients to prevent resource leaks. Await cleanup so the
+    // caller (e.g. the ACP server on SIGTERM) can reap child MCP subprocesses
+    // deterministically before the process exits.
     const mcpClients = this._engine?.getMcpClients?.() ?? []
-    for (const client of mcpClients) {
-      if (client.type === 'connected' && client.cleanup) {
-        // Fire-and-forget cleanup — close() is synchronous
-        void client.cleanup().catch(err => {
-          console.warn('SDK: MCP client cleanup error:', err instanceof Error ? err.message : String(err))
-        })
-      }
-    }
+    await Promise.allSettled(
+      mcpClients.map(client =>
+        client.type === 'connected' && client.cleanup
+          ? client.cleanup().catch(err =>
+              console.warn('SDK: MCP client cleanup error:', err instanceof Error ? err.message : String(err)),
+            )
+          : Promise.resolve(),
+      ),
+    )
     // Clear engine and store references to prevent memory leaks
     this._engine = null
     this._appStateStore = null
@@ -496,15 +544,39 @@ class SDKSessionImpl implements SDKSession {
       pending.resolve({
         behavior: 'allow',
         updatedInput: decision.updatedInput,
+        ...(decision.decisionClassification
+          ? { decisionClassification: decision.decisionClassification }
+          : {}),
       })
     } else {
       pending.resolve({
         behavior: 'deny',
         message: decision.message ?? 'Permission denied',
         decisionReason: { type: 'mode', mode: 'default' },
+        ...(decision.decisionClassification
+          ? { decisionClassification: decision.decisionClassification }
+          : {}),
       })
     }
     this.pendingPermissionPrompts.delete(toolUseId)
+
+    // "Always allow/deny" promises carry rules in `updatedPermissions`; the
+    // terminal applies them to the live context and persists them, so the SDK
+    // host must too or the promise silently does nothing.
+    const updates = decision.updatedPermissions
+    if (updates && updates.length > 0) {
+      const store = this._appStateStore
+      if (store) {
+        store.setState(prev => ({
+          ...prev,
+          toolPermissionContext: applyPermissionUpdatesToLiveContext(
+            prev.toolPermissionContext,
+            updates,
+          ),
+        }))
+      }
+      persistPermissionUpdates(updates)
+    }
   }
 }
 
@@ -835,6 +907,6 @@ export async function unstable_v2_prompt(
 
     return resultMessage
   } finally {
-    session.close()
+    await session.close()
   }
 }

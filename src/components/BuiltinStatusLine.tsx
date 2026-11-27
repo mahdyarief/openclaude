@@ -7,6 +7,7 @@ import { useMainLoopModel } from '../hooks/useMainLoopModel.js';
 import type { ReadonlySettings } from '../hooks/useSettings.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import { Box, Text } from '../ink.js';
+import { getEffortNotificationText } from './EffortIndicator.js';
 import { getRawUtilization } from '../services/claudeAiLimits.js';
 import { useClaudeAiLimits } from '../services/claudeAiLimitsHook.js';
 import { useAppState } from '../state/AppState.js';
@@ -55,6 +56,8 @@ export type BuiltinStatusData = {
   /** When true, token counts are transcript-based estimates (e.g. all-zero provider response). */
   contextIsEstimated?: boolean;
   costUSD: number;
+  /** Rendered effort badge (symbol + level + /effort), when model supports it. */
+  effortText?: string;
   /** Worst rate-limit window, or null when no utilization data (API-key users). */
   rateLimit: {
     label: string;
@@ -107,6 +110,15 @@ export function buildBuiltinStatusSegments(data: BuiltinStatusData): StatusSegme
       priority: 3,
       text: `${data.rateLimit.label} ${pct}%`,
       color: pct >= 85 ? 'error' : pct >= 60 ? 'warning' : undefined
+    });
+  }
+  if (data.effortText) {
+    segments.push({
+      key: 'effort',
+      // Dropped before context/cost/rate-limit when the terminal narrows.
+      priority: 4,
+      text: data.effortText,
+      shortText: data.effortText.split(' · ')[0]
     });
   }
   return segments;
@@ -180,6 +192,7 @@ function BuiltinStatusLineInner({
   lastAssistantMessageId
 }: Props): React.ReactNode {
   const permissionMode = useAppState(s => s.toolPermissionContext.mode);
+  const effortValue = useAppState(s => s.effortValue);
   // AppState-sourced model — same source as API requests (see StatusLine).
   const mainLoopModel = useMainLoopModel();
   // Subscribe to rate-limit header updates so the segment stays fresh.
@@ -203,6 +216,7 @@ function BuiltinStatusLineInner({
       : null;
     return {
       modelName: renderModelName(runtimeModel),
+      effortText: getEffortNotificationText(effortValue, runtimeModel),
       contextUsedPercent: contextPercentages.used,
       contextInputTokens: inputTokens,
       contextWindow: contextWindowSize,
@@ -212,7 +226,7 @@ function BuiltinStatusLineInner({
     // messagesRef is stable; lastAssistantMessageId is the messages-changed signal
     // eslint-disable-next-line react-hooks/exhaustive-deps
     // biome-ignore lint/correctness/useExhaustiveDependencies: intentional
-  }, [lastAssistantMessageId, permissionMode, mainLoopModel, messagesRef]);
+  }, [lastAssistantMessageId, permissionMode, effortValue, mainLoopModel, messagesRef]);
   const segments = fitSegments(buildBuiltinStatusSegments({
     ...computed,
     rateLimit: getWorstRateLimit()

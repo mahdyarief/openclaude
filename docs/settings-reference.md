@@ -60,11 +60,11 @@ Optional tuning fields: `simpleMaxChars`, `simpleMaxWords`.
 
 ### `maxContextWindow` (number)
 
-Global override for the max context window in tokens, applied to all models. This is an explicit override: it wins over env vars, the catalog/discovery cache, and descriptor defaults, and can raise or lower the effective limit. If unset, the normal resolution chain applies.
+Fallback context window in tokens for models whose own limit is unknown. Model-specific values always win: an exact env override, the catalog/discovery cache, a `modelLimits` entry, or a descriptor default is used first, and `maxContextWindow` only applies when none of them resolves. It does not cap or raise a known model limit. If unset, the normal resolution chain applies.
 
 ```json
 {
-  "maxContextWindow": 1048576
+  "maxContextWindow": 500000
 }
 ```
 
@@ -130,6 +130,20 @@ Controls what `/model` shows when an active provider profile is applied. `auto` 
   "providerProfileModelPickerMode": "auto"
 }
 ```
+
+### ACP / Studio permission mode
+
+Studio and other ACP clients send the selected permission mode in the
+`session/new` and `session/load` request (`_meta.permissionMode`). The agent
+reads it once when the session is created; there is no in-flight mode switch
+yet, so changing the mode applies to the next session.
+
+`fullAccess` and `bypassPermissions` auto-allow ordinary tools and do **not**
+emit `session/request_permission` — the host is only prompted when a tool's
+own rules return `ask` (or a forced decision requires it). Other modes
+(`default`, `plan`, `acceptEdits`, `dontAsk`) keep prompting as configured.
+If `_meta.permissionMode` is absent, the agent falls back to the
+`OPENCLAUDE_ACP_PERMISSION_MODE` env var, then to `bypassPermissions`.
 
 ### `autoCompactEnabled` (boolean)
 

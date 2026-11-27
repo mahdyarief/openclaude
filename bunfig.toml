@@ -1,0 +1,5 @@
+[test]
+# Studio is a nested pnpm monorepo tracked under the same git repo but built and
+# tested with its own toolchain (pnpm + vitest). Keep `bun test` scoped to the
+# openclaude package so the two suites never mix.
+exclude = ["studio/**", "node_modules/**", "dist/**"]

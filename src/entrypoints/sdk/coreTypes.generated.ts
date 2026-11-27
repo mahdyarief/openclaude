@@ -280,6 +280,43 @@ export type PermissionResult = ({
 }) | ({
   behavior: "deny"
   message: string
+  updatedPermissions?: (({
+    type: "addRules"
+    rules: {
+      toolName: string
+      ruleContent?: string
+    }[]
+    behavior: "allow" | "deny" | "ask"
+    destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
+  }) | ({
+    type: "replaceRules"
+    rules: {
+      toolName: string
+      ruleContent?: string
+    }[]
+    behavior: "allow" | "deny" | "ask"
+    destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
+  }) | ({
+    type: "removeRules"
+    rules: {
+      toolName: string
+      ruleContent?: string
+    }[]
+    behavior: "allow" | "deny" | "ask"
+    destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
+  }) | ({
+    type: "setMode"
+    mode: "default" | "acceptEdits" | "bypassPermissions" | "fullAccess" | "plan" | "dontAsk"
+    destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
+  }) | ({
+    type: "addDirectories"
+    directories: string[]
+    destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
+  }) | ({
+    type: "removeDirectories"
+    directories: string[]
+    destination: "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
+  }))[]
   interrupt?: boolean
   toolUseID?: string
   decisionClassification?: "user_temporary" | "user_permanent" | "user_reject"
@@ -2055,6 +2092,7 @@ export type SDKSessionInfo = {
   gitBranch?: string
   cwd?: string
   tag?: string
+  forkParentSessionId?: string
   createdAt?: number
 }
 

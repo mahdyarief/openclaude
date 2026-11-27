@@ -1,0 +1,17 @@
+{
+  "name": "openclaude-studio",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.15.0",
+  "engines": { "node": ">=22.0.0" },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -b",
+    "dev:web": "pnpm --filter @openclaude-studio/web dev"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

@@ -133,6 +133,26 @@ describe('buildBuiltinStatusSegments', () => {
     expect(ctxWithoutFlag?.text).toBe('ctx 74K/200K (37%)')
     expect(ctxWithoutFlag?.shortText).toBe('ctx 74K/200K')
   })
+  it('renders effort as a droppable segment when model supports it', () => {
+    const effortText = '● high · /effort'
+    const segments = buildBuiltinStatusSegments({ ...fullData, effortText })
+
+    expect(segments.map(s => s.key)).toEqual([
+      'model',
+      'context',
+      'cost',
+      'rateLimit',
+      'effort',
+    ])
+    const effort = segments.find(s => s.key === 'effort')
+    expect(effort?.text).toBe('● high · /effort')
+    expect(effort?.shortText).toBe('● high')
+    expect(effort?.priority).toBe(4)
+  })
+
+  it('omits effort segment when no text is provided', () => {
+    expect(buildBuiltinStatusSegments(fullData).find(s => s.key === 'effort')).toBeUndefined()
+  })
 })
 
 describe('fitSegments', () => {

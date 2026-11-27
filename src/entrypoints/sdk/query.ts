@@ -184,8 +184,9 @@ export interface Query {
   setModel(model: string): Promise<void>
   /** Change the permission mode mid-conversation. */
   setPermissionMode(mode: QueryPermissionMode): Promise<void>
-  /** Cleanup resources and stop iteration. */
-  close(): void
+  /** Cleanup resources and stop iteration. Resolves after MCP child
+   * processes have been disconnected. */
+  close(): Promise<void>
   /** Abort the current operation. */
   interrupt(): void
   /** Respond to a pending permission prompt. */
@@ -758,20 +759,22 @@ class QueryImpl implements Query {
     this.engine.updateTools(updatedTools)
   }
 
-  close(): void {
+  async close(): Promise<void> {
     const wrapperController = this.abortController
     this.interruptWithSource('sdk_close')
     requestSdkRootAbort(wrapperController, 'sdk_close', 'sdk_query')
-    // Disconnect MCP clients to prevent resource leaks
+    // Disconnect MCP clients to prevent resource leaks. Await cleanup so the
+    // caller can reap child MCP subprocesses deterministically before exiting.
     const mcpClients = this._engine?.getMcpClients?.() ?? []
-    for (const client of mcpClients) {
-      if (client.type === 'connected' && client.cleanup) {
-        // Fire-and-forget cleanup — close() is synchronous
-        void client.cleanup().catch(err => {
-          console.warn('SDK: MCP client cleanup error:', err instanceof Error ? err.message : String(err))
-        })
-      }
-    }
+    await Promise.allSettled(
+      mcpClients.map(client =>
+        client.type === 'connected' && client.cleanup
+          ? client.cleanup().catch(err =>
+              console.warn('SDK: MCP client cleanup error:', err instanceof Error ? err.message : String(err)),
+            )
+          : Promise.resolve(),
+      ),
+    )
     // Clear engine reference to prevent memory leaks
     this._engine = null
   }

@@ -21,6 +21,8 @@
     "dist/sdk.mjs",
     "dist/acp.mjs",
     "dist/acp-web.mjs",
+    "dist/studio-server.mjs",
+    "dist/studio-web/",
     "src/entrypoints/sdk.d.ts",
     "src/entrypoints/sdk/coreTypes.generated.ts",
     "scripts/windows/openclaude-aliases.ps1",

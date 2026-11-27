@@ -1,0 +1,25 @@
+{
+  "$schema": "https://ui.shadcn.com/schema.json",
+  "style": "new-york",
+  "rsc": false,
+  "tsx": true,
+  "tailwind": {
+    "config": "",
+    "css": "src/theme.css",
+    "baseColor": "neutral",
+    "cssVariables": true,
+    "prefix": ""
+  },
+  "aliases": {
+    "components": "@openclaude-studio/ui/beautifui",
+    "utils": "@openclaude-studio/ui/lib/cn",
+    "ui": "@openclaude-studio/ui/beautifui",
+    "lib": "@openclaude-studio/ui/lib",
+    "hooks": "@openclaude-studio/ui/beautifui/hooks"
+  },
+  "registries": {
+    "@beautifului": {
+      "url": "https://www.beautifului.dev/r/{name}.json"
+    }
+  }
+}

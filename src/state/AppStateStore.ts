@@ -96,13 +96,17 @@ export type AppState = DeepImmutable<{
   statusLineText: string | undefined
   expandedView: 'none' | 'tasks' | 'teammates'
   isBriefOnly: boolean
-  // Optional - only present when ENABLE_AGENT_SWARMS is true (for dead code elimination)
-  showTeammateMessagePreview?: boolean
   selectedIPAgentIndex: number
   // CoordinatorTaskPanel selection: -1 = pill, 0 = main, 1..N = agent rows.
   // AppState (not local) so the panel can read it directly without prop-drilling
   // through PromptInput → PromptInputFooter.
   coordinatorTaskIndex: number
+  /**
+   * Right-docked diff pane visibility, toggled by /diff. Optional so the
+   * diff pane is simply absent from state shape in strips that never mount
+   * it; `getDefaultAppState()` seeds it to false.
+   */
+  diffPanelVisible?: boolean
   viewSelectionMode: 'none' | 'selecting-agent' | 'viewing-agent'
   // Which footer pill is focused (arrow-key navigation below the prompt).
   // Lives in AppState so pill components rendered outside PromptInput
@@ -480,8 +484,8 @@ export function getDefaultAppState(): AppState {
     statusLineText: undefined,
     expandedView: 'none',
     isBriefOnly: false,
-    showTeammateMessagePreview: false,
     selectedIPAgentIndex: -1,
+    diffPanelVisible: false,
     coordinatorTaskIndex: -1,
     viewSelectionMode: 'none',
     footerSelection: null,

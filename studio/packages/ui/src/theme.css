@@ -1,0 +1,62 @@
+:root {
+  --oc-bg: 220 20% 7%;
+  --oc-surface: 220 16% 11%;
+  --oc-surface-raised: 220 14% 15%;
+  --oc-border: 220 12% 22%;
+  --oc-text: 220 20% 94%;
+  --oc-text-muted: 220 10% 62%;
+  --oc-accent: 262 80% 66%;
+  --oc-danger: 0 72% 58%;
+  --oc-success: 152 55% 50%;
+  --oc-radius: 0.75rem;
+  --oc-font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.oc-shell {
+  display: grid;
+  grid-template-columns: 15rem minmax(0, 1fr) 20rem;
+  height: 100dvh;
+  background: hsl(var(--oc-bg));
+  color: hsl(var(--oc-text));
+}
+
+@media (max-width: 1024px) {
+  .oc-shell { grid-template-columns: 4.5rem minmax(0, 1fr); }
+  .oc-shell > [data-region='context'] { display: none; }
+}
+
+/* Theme toggle (magicui-style clip-path reveal). The old snapshot stays put
+ * while the new one is clipped to a growing shape from the click point, so the
+ * incoming theme floods outward from the button. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+::view-transition-old(root) {
+  z-index: 1;
+}
+
+::view-transition-new(root) {
+  z-index: 2;
+}
+
+/* Pin the collapsed clip-path while the JS animation drives the reveal. The
+ * group duration is synced to the same variable so old/new stay in lockstep. */
+::view-transition-group(root) {
+  animation-duration: var(--magicui-theme-toggle-vt-duration, 0.4s);
+}
+
+:root[data-magicui-theme-vt="active"]::view-transition-new(root) {
+  clip-path: var(--magicui-theme-vt-clip-from);
+  animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
+}

@@ -45,7 +45,6 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       ...(feature('KAIROS') || feature('KAIROS_BRIEF')
         ? { 'ctrl+shift+b': 'app:toggleBrief' as const }
         : {}),
-      'ctrl+shift+o': 'app:toggleTeammatePreview',
       'ctrl+r': 'history:search',
       // File navigation. cmd+ bindings only fire on kitty-protocol terminals;
       // ctrl+shift is the portable fallback.
@@ -293,11 +292,10 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
         },
       ]
     : []),
-  // Diff dialog navigation
+  // Diff pane navigation
   {
-    context: 'DiffDialog',
+    context: 'DiffPane',
     bindings: {
-      escape: 'diff:dismiss',
       left: 'diff:previousSource',
       right: 'diff:nextSource',
       up: 'diff:previousFile',

@@ -720,6 +720,20 @@ export const SettingsSchema = lazySchema(() =>
           type: z.literal('command'),
           command: z.string(),
           padding: z.number().optional(),
+          refreshInterval: z
+            .number()
+            .int()
+            .min(1)
+            .optional()
+            .describe(
+              'Re-run the status line command every N seconds in addition to event-driven updates',
+            ),
+          hideVimModeIndicator: z
+            .boolean()
+            .optional()
+            .describe(
+              'Hide the built-in `-- INSERT --` / `-- VISUAL --` indicator below the prompt. Use this when your status line script renders `vim.mode` itself.',
+            ),
         })
         .optional()
         .describe('Custom status line display configuration'),
@@ -966,8 +980,9 @@ export const SettingsSchema = lazySchema(() =>
         .positive()
         .optional()
         .describe(
-          'Global override for max context window (tokens). Applied to all models, ' +
-            'taking the highest precedence over per-model settings, env vars, and catalog limits.',
+          'Fallback context window (tokens) for models whose own limit is unknown. ' +
+            'Model-specific values (env overrides, catalog/discovery cache, modelLimits, ' +
+            'and descriptor defaults) always win; this applies only when none resolves.',
         ),
       modelLimits: z
         .record(

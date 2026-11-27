@@ -1,0 +1,607 @@
+import { spawn, type ChildProcess } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import { createInterface } from 'node:readline'
+import { fileURLToPath } from 'node:url'
+import { WebSocketServer, type WebSocket } from 'ws'
+import { browseDirectory, listRoots } from './browse.js'
+import { listDirectory, readFileScoped, writeFileScoped } from './fs.js'
+import { createMetricsSampler } from './metrics.js'
+import { getSessionHistory, listProjects, listSessions, projectsRoot } from './sessions.js'
+import { isPermissionMode } from '@openclaude-studio/acp'
+import { readState, writeState, type UiState } from './state.js'
+
+export type BridgeOptions = {
+  host?: string
+  port?: number
+  token?: string
+  /** when true, HTTP/WS routes skip token auth entirely (opt-in, insecure) */
+  tokenless?: boolean
+  agentCommand?: { command: string; args: string[] }
+  cwd?: string
+  env?: Record<string, string>
+}
+
+// Compiled output lives in dist/, the shim ships as source. Resolve upward.
+const defaultShim = fileURLToPath(new URL('../src/shim.mjs', import.meta.url))
+
+// CORS for the /fs route. The web client and the bridge are served from
+// different browser origins (e.g. :8768 vs :8787). The token is passed as a
+// query parameter rather than a custom header, so a simple GET needs no
+// preflight — but we still reflect the request Origin (or `*`) so cross-origin
+// reads of both success and error responses are permitted.
+function corsHeaders(req: IncomingMessage): Record<string, string> {
+  const origin = req.headers.origin
+  return {
+    'access-control-allow-origin': typeof origin === 'string' ? origin : '*',
+    'access-control-allow-headers': 'authorization, content-type',
+    'access-control-allow-methods': 'GET, PUT, POST, OPTIONS',
+  }
+}
+
+// Collects a request body into a string. Save requests carry one small JSON
+// payload (the edited text), so there is no need to stream or cap it here.
+function readBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = []
+    req.on('data', chunk => chunks.push(Buffer.from(chunk)))
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
+    req.on('error', reject)
+  })
+}
+
+type BridgeTerminal = {
+  child: ChildProcess
+  output: string
+  truncated: boolean
+  exitStatus: { exitCode: number | null; signal: string | null } | null
+  waiters: Array<(status: { exitCode: number | null; signal: string | null }) => void>
+  byteLimit: number
+}
+
+function terminalFinish(
+  state: BridgeTerminal,
+  exitCode: number | null,
+  signal: string | null,
+): void {
+  if (state.exitStatus) return
+  state.exitStatus = { exitCode, signal }
+  for (const resolve of state.waiters.splice(0)) resolve(state.exitStatus)
+}
+
+function bridgeTerminal(terminals: Map<string, BridgeTerminal>, id: string): BridgeTerminal {
+  const state = terminals.get(id)
+  if (!state) throw new Error(`unknown terminal: ${id}`)
+  return state
+}
+
+async function handleTerminalRequest(
+  body: Record<string, unknown>,
+  defaultCwd: string,
+  terminals: Map<string, BridgeTerminal>,
+): Promise<unknown> {
+  const id = typeof body.terminalId === 'string' ? body.terminalId : ''
+  switch (body.action) {
+    case 'create': {
+      if (typeof body.command !== 'string') throw new Error('command is required')
+      const terminalId = randomBytes(16).toString('hex')
+      const env = Array.isArray(body.env)
+        ? Object.fromEntries(body.env.flatMap(variable => {
+            if (!variable || typeof variable !== 'object') return []
+            const item = variable as Record<string, unknown>
+            return typeof item.name === 'string' && typeof item.value === 'string'
+              ? [[item.name, item.value]]
+              : []
+          }))
+        : {}
+      const byteLimit = typeof body.outputByteLimit === 'number' ? body.outputByteLimit : 1024 * 1024
+      const child = spawn(body.command, Array.isArray(body.args) ? body.args.map(String) : [], {
+        cwd: typeof body.cwd === 'string' ? body.cwd : defaultCwd,
+        env: { ...process.env, ...env },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      const state: BridgeTerminal = {
+        child,
+        output: '',
+        truncated: false,
+        exitStatus: null,
+        waiters: [],
+        byteLimit,
+      }
+      const append = (chunk: Buffer | string) => {
+        state.output += chunk.toString()
+        if (Buffer.byteLength(state.output) > byteLimit) {
+          state.output = Buffer.from(state.output).subarray(-byteLimit).toString('utf8')
+          state.truncated = true
+        }
+      }
+      child.stdout?.on('data', append)
+      child.stderr?.on('data', append)
+      child.on('error', error => {
+        append(String(error))
+        terminalFinish(state, null, 'error')
+      })
+      child.on('close', (code, signal) => terminalFinish(state, code, signal))
+      terminals.set(terminalId, state)
+      return { terminalId }
+    }
+    case 'output': {
+      const state = bridgeTerminal(terminals, id)
+      return {
+        output: state.output,
+        truncated: state.truncated,
+        ...(state.exitStatus ? { exitStatus: state.exitStatus } : {}),
+      }
+    }
+    case 'wait_for_exit': {
+      const state = bridgeTerminal(terminals, id)
+      if (state.exitStatus) return state.exitStatus
+      return new Promise(resolve => state.waiters.push(resolve))
+    }
+    case 'kill': {
+      const state = bridgeTerminal(terminals, id)
+      state.child.kill()
+      return {}
+    }
+    case 'release': {
+      const state = bridgeTerminal(terminals, id)
+      state.child.kill()
+      terminalFinish(state, state.exitStatus?.exitCode ?? null, state.exitStatus?.signal ?? 'SIGTERM')
+      terminals.delete(id)
+      return {}
+    }
+    default:
+      throw new Error('unknown terminal action')
+  }
+}
+
+export async function startBridge(options: BridgeOptions = {}): Promise<{
+  url: string
+  token: string
+  close: () => Promise<void>
+}> {
+  const host = options.host ?? '127.0.0.1'
+  const tokenless = options.tokenless === true
+  const token = options.token ?? randomBytes(24).toString('hex')
+  // In tokenless mode every HTTP route and the WebSocket upgrade skip the
+  // token check. It is opt-in and must only be used on a trusted/private network.
+  const agentCommand = options.agentCommand ?? {
+    command: process.execPath,
+    args: [defaultShim],
+  }
+  const children = new Set<ChildProcess>()
+  const bridgeTerminals = new Map<string, BridgeTerminal>()
+
+  // Resource sampler for the status footer. Cumulative CPU counters are
+  // converted to a percentage between polls, so the web client just reads it.
+  const sampleMetrics = createMetricsSampler({
+    startedAt: Date.now(),
+    activeSessions: () => children.size,
+  })
+
+  /**
+   * Terminate an agent child process and its entire process group.
+   *
+   * Sends SIGTERM first, then escalates to SIGKILL after a grace period. The
+   * ACP agent installs its own SIGTERM handler that calls `session.close()` to
+   * reap MCP child processes, but if the process is stuck in uninterruptible
+   * I/O (state D) it cannot react — so we force-kill the whole group to avoid
+   * orphaned agent/MCP processes piling up.
+   */
+  const KILL_GRACE_MS = 5000
+  const signalAgent = (child: ChildProcess): void => {
+    if (child.exitCode !== null || child.signalCode !== null) return
+    const groupPid = child.pid !== undefined && process.platform !== 'win32' ? -child.pid : child.pid
+    const term = (sig: NodeJS.Signals): void => {
+      try {
+        if (groupPid !== undefined) process.kill(groupPid, sig)
+      } catch {
+        child.kill(sig)
+      }
+    }
+    term('SIGTERM')
+    const timer = setTimeout(() => term('SIGKILL'), KILL_GRACE_MS)
+    child.once('exit', () => clearTimeout(timer))
+  }
+  // Live SSE subscribers. `/state` writes broadcast to every device so opening a
+  // session on one device updates the rail on the others without a refresh.
+  const stateSubscribers = new Set<ServerResponse>()
+
+  const broadcastState = (state: UiState): void => {
+    const frame = `event: state\ndata: ${JSON.stringify(state)}\n\n`
+    for (const subscriber of stateSubscribers) {
+      subscriber.write(frame)
+    }
+  }
+
+  // Serializes read-modify-write cycles on the state file. Without this, two
+  // devices writing at once both read the same base rev and stamp the same
+  // value, so clients could drop the second write as a stale frame.
+  let writeQueue: Promise<unknown> = Promise.resolve()
+  const saveState = (
+    next: Omit<UiState, 'rev' | 'permissionMode'> & { permissionMode?: unknown },
+  ): Promise<UiState> => {
+    const run = writeQueue.then(async () => {
+      const base = await readState()
+      // An older client that doesn't send permissionMode must not reset the
+      // mode other devices chose; only an explicit valid mode changes it.
+      const saved = await writeState({
+        workspaces: next.workspaces,
+        activePath: next.activePath,
+        sessions: next.sessions,
+        permissionMode: isPermissionMode(next.permissionMode)
+          ? next.permissionMode
+          : base.permissionMode,
+        rev: base.rev,
+      })
+      broadcastState(saved)
+      return saved
+    })
+    writeQueue = run.catch(() => undefined)
+    return run
+  }
+
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url ?? '/', `http://${host}`)
+
+    if (
+      url.pathname === '/projects' ||
+      url.pathname === '/sessions' ||
+      url.pathname === '/session-history' ||
+      url.pathname === '/metrics' ||
+      url.pathname === '/state' ||
+      url.pathname === '/state/stream'
+    ) {
+      const cors = corsHeaders(req)
+      const presented = url.searchParams.get('token')
+      const header = req.headers.authorization
+      const authorized = tokenless || presented === token || header === `Bearer ${token}`
+
+      if (!authorized) {
+        res.writeHead(401, cors)
+        res.end()
+        return
+      }
+
+      try {
+        if (url.pathname === '/projects') {
+          const projects = await listProjects(projectsRoot())
+          res.writeHead(200, { 'content-type': 'application/json', ...cors })
+          res.end(JSON.stringify({ projects }))
+          return
+        }
+
+        // Lightweight host resource snapshot for the status footer. Reads from
+        // the pre-built sampler so the web client only polls JSON.
+        if (url.pathname === '/metrics') {
+          res.writeHead(200, { 'content-type': 'application/json', ...cors })
+          res.end(JSON.stringify(sampleMetrics()))
+          return
+        }
+
+        // UI state lives on the server so the rail is identical on every device.
+        // GET returns the state; PUT writes a new one (add/remove workspace,
+        // active workspace, open session list). `/state/stream` opens an SSE feed
+        // that replays the current state and pushes updates on every write.
+        if (url.pathname === '/state/stream') {
+          res.writeHead(200, {
+            'content-type': 'text/event-stream',
+            'cache-control': 'no-cache, no-transform',
+            connection: 'keep-alive',
+            ...cors,
+          })
+          res.write('retry: 3000\n\n')
+          const state = await readState()
+          res.write(`event: state\ndata: ${JSON.stringify(state)}\n\n`)
+          stateSubscribers.add(res)
+          req.on('close', () => stateSubscribers.delete(res))
+          return
+        }
+
+        if (url.pathname === '/state') {
+          if (req.method === 'PUT') {
+            const body = JSON.parse(await readBody(req))
+            const saved = await saveState({
+              workspaces: Array.isArray(body.workspaces) ? body.workspaces : [],
+              activePath: typeof body.activePath === 'string' ? body.activePath : null,
+              sessions: Array.isArray(body.sessions) ? body.sessions : [],
+              permissionMode: body.permissionMode,
+            })
+            res.writeHead(200, { 'content-type': 'application/json', ...cors })
+            res.end(JSON.stringify(saved))
+            return
+          }
+          const state = await readState()
+          res.writeHead(200, { 'content-type': 'application/json', ...cors })
+          res.end(JSON.stringify(state))
+          return
+        }
+
+        if (url.pathname === '/session-history') {
+          const cwd = url.searchParams.get('cwd')
+          const id = url.searchParams.get('id')
+          if (!cwd || !id) {
+            res.writeHead(400, { 'content-type': 'application/json', ...cors })
+            res.end(JSON.stringify({ error: 'cwd and id are required' }))
+            return
+          }
+          const messages = await getSessionHistory(projectsRoot(), cwd, id)
+          res.writeHead(200, { 'content-type': 'application/json', ...cors })
+          res.end(JSON.stringify({ messages }))
+          return
+        }
+
+        const cwd = url.searchParams.get('cwd')
+        if (!cwd) {
+          res.writeHead(400, { 'content-type': 'application/json', ...cors })
+          res.end(JSON.stringify({ error: 'cwd is required' }))
+          return
+        }
+        const sessions = await listSessions(projectsRoot(), cwd)
+        res.writeHead(200, { 'content-type': 'application/json', ...cors })
+        res.end(JSON.stringify({ sessions }))
+        return
+      } catch (err) {
+        console.error('[bridge] route error', url.pathname, err)
+        res.writeHead(500, { 'content-type': 'application/json', ...cors })
+        res.end(JSON.stringify({ error: String(err) }))
+      }
+      return
+    }
+
+    if (url.pathname === '/fs') {
+      const cors = corsHeaders(req)
+
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204, cors)
+        res.end()
+        return
+      }
+
+      const presented = url.searchParams.get('token')
+      const header = req.headers.authorization
+      const authorized = tokenless || presented === token || header === `Bearer ${token}`
+
+      if (!authorized) {
+        res.writeHead(401, cors)
+        res.end()
+        return
+      }
+
+      try {
+        const rel = url.searchParams.get('path') ?? '.'
+        // The web client pins a workspace; scope the listing to that workspace
+        // root so the explorer reflects the selected project. Defaults to the
+        // bridge cwd for backward compatibility.
+        const root = url.searchParams.get('root') ?? options.cwd ?? process.cwd()
+        const listing = listDirectory(root, rel)
+        res.writeHead(200, { 'content-type': 'application/json', ...cors })
+        res.end(JSON.stringify(listing))
+      } catch {
+        res.writeHead(500, cors)
+        res.end()
+      }
+      return
+    }
+
+    if (url.pathname === '/file') {
+      const cors = corsHeaders(req)
+
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204, cors)
+        res.end()
+        return
+      }
+
+      const presented = url.searchParams.get('token')
+      const header = req.headers.authorization
+      const authorized = tokenless || presented === token || header === `Bearer ${token}`
+
+      if (!authorized) {
+        res.writeHead(401, cors)
+        res.end()
+        return
+      }
+
+      try {
+        const rel = url.searchParams.get('path')
+        if (!rel) throw new Error('missing path')
+        const root = url.searchParams.get('root') ?? options.cwd ?? process.cwd()
+
+        if (req.method === 'PUT') {
+          const body = JSON.parse(await readBody(req)) as { text?: unknown }
+          if (typeof body.text !== 'string') throw new Error('body must contain a text string')
+          writeFileScoped(root, rel, body.text)
+          const file = readFileScoped(root, rel)
+          res.writeHead(200, { 'content-type': 'application/json', ...cors })
+          res.end(JSON.stringify(file))
+          return
+        }
+
+        const file = readFileScoped(root, rel)
+        res.writeHead(200, { 'content-type': 'application/json', ...cors })
+        res.end(JSON.stringify(file))
+      } catch (error) {
+        res.writeHead(400, { 'content-type': 'application/json', ...cors })
+        res.end(JSON.stringify({ error: error instanceof Error ? error.message : 'cannot read file' }))
+      }
+      return
+    }
+
+    if (url.pathname === '/terminal') {
+      const cors = corsHeaders(req)
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204, cors)
+        res.end()
+        return
+      }
+      const presented = url.searchParams.get('token')
+      const header = req.headers.authorization
+      if (!tokenless && presented !== token && header !== `Bearer ${token}`) {
+        res.writeHead(401, cors)
+        res.end()
+        return
+      }
+      try {
+        const result = await handleTerminalRequest(
+          JSON.parse(await readBody(req)) as Record<string, unknown>,
+          options.cwd ?? process.cwd(),
+          bridgeTerminals,
+        )
+        res.writeHead(200, { 'content-type': 'application/json', ...cors })
+        res.end(JSON.stringify(result))
+      } catch (error) {
+        res.writeHead(400, { 'content-type': 'application/json', ...cors })
+        res.end(JSON.stringify({ error: error instanceof Error ? error.message : 'terminal request failed' }))
+      }
+      return
+    }
+
+    if (url.pathname === '/browse' || url.pathname === '/roots') {
+      const cors = corsHeaders(req)
+      const presented = url.searchParams.get('token')
+      const header = req.headers.authorization
+      const authorized = tokenless || presented === token || header === `Bearer ${token}`
+
+      if (!authorized) {
+        res.writeHead(401, cors)
+        res.end()
+        return
+      }
+
+      try {
+        if (url.pathname === '/roots') {
+          res.writeHead(200, { 'content-type': 'application/json', ...cors })
+          res.end(JSON.stringify({ roots: listRoots() }))
+          return
+        }
+
+        const listing = browseDirectory(url.searchParams.get('path') ?? undefined)
+        res.writeHead(200, { 'content-type': 'application/json', ...cors })
+        res.end(JSON.stringify(listing))
+        return
+      } catch (error) {
+        res.writeHead(400, { 'content-type': 'application/json', ...cors })
+        res.end(JSON.stringify({ error: error instanceof Error ? error.message : 'cannot browse path' }))
+        return
+      }
+    }
+
+    res.writeHead(404)
+    res.end()
+  })
+  const wss = new WebSocketServer({ noServer: true })
+
+  // Reap agents whose UI disappeared without a clean close frame (tab closed,
+  // laptop slept, Tailscale dropped). Without a heartbeat the `close` event may
+  // never fire and the agent child is orphaned indefinitely.
+  type AliveSocket = WebSocket & { isAlive?: boolean }
+  const HEARTBEAT_MS = 30_000
+  const heartbeat = setInterval(() => {
+    for (const client of wss.clients as Set<AliveSocket>) {
+      if (client.isAlive === false) {
+        client.terminate()
+        continue
+      }
+      client.isAlive = false
+      client.ping()
+    }
+  }, HEARTBEAT_MS)
+  heartbeat.unref()
+
+  server.on('upgrade', (request, socket, head) => {
+    const url = new URL(request.url ?? '/', `http://${host}`)
+    const presented = url.searchParams.get('token')
+    const header = request.headers.authorization
+    const authorized =
+      tokenless || presented === token || header === `Bearer ${token}`
+
+    if (!authorized) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
+      socket.destroy()
+      return
+    }
+
+    wss.handleUpgrade(request, socket, head, ws => {
+      const tracked = ws as AliveSocket
+      tracked.isAlive = true
+      tracked.on('pong', () => {
+        tracked.isAlive = true
+      })
+      const agent = spawn(agentCommand.command, agentCommand.args, {
+        cwd: options.cwd ?? process.cwd(),
+        stdio: ['pipe', 'pipe', 'pipe'],
+        detached: process.platform !== 'win32',
+        env: { ...process.env, OPENCLAUDE_BRIDGE: '1', ...options.env },
+      })
+      children.add(agent)
+
+      // Agent stdout is newline-delimited JSON. Chunks can split a line, so
+      // buffer through readline rather than sending raw chunks.
+      const lines = createInterface({ input: agent.stdout, crlfDelay: Infinity })
+      lines.on('line', line => {
+        if (!line.trim()) return
+        try {
+          JSON.parse(line)
+        } catch {
+          process.stderr.write(`[bridge] dropping non-JSON agent line\n`)
+          return
+        }
+        if (ws.readyState === ws.OPEN) ws.send(line)
+      })
+
+      agent.stderr.on('data', chunk => {
+        process.stderr.write(`[agent] ${chunk.toString()}`)
+      })
+
+      ws.on('message', data => {
+        if (agent.stdin.destroyed) return
+        const text = data.toString()
+        try {
+          JSON.parse(text)
+        } catch {
+          ws.send(JSON.stringify({
+            jsonrpc: '2.0',
+            id: null,
+            error: { code: -32700, message: 'Parse error' },
+          }))
+          return
+        }
+        agent.stdin.write(text + '\n')
+      })
+
+      const kill = (): void => {
+        children.delete(agent)
+        signalAgent(agent)
+      }
+
+      ws.on('close', kill)
+      agent.on('exit', code => {
+        children.delete(agent)
+        if (ws.readyState === ws.OPEN) {
+          ws.close(1011, `agent exited with ${code ?? 'signal'}`)
+        }
+      })
+    })
+  })
+
+  await new Promise<void>(resolve => server.listen(options.port ?? 0, host, resolve))
+  const address = server.address()
+  if (address === null || typeof address === 'string') throw new Error('bridge failed to bind')
+
+  return {
+    url: `ws://${host}:${address.port}`,
+    token,
+    close: async () => {
+      for (const state of bridgeTerminals.values()) state.child.kill()
+      bridgeTerminals.clear()
+      clearInterval(heartbeat)
+      for (const subscriber of stateSubscribers) subscriber.destroy()
+      stateSubscribers.clear()
+      for (const client of wss.clients as Set<WebSocket>) client.terminate()
+      for (const child of children) signalAgent(child)
+      children.clear()
+      await new Promise<void>(resolve => server.close(() => resolve()))
+    },
+  }
+}
