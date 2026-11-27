@@ -177,6 +177,8 @@ describe('printStartupScreen layout', () => {
 
     expect(lines[0]!.startsWith('╭')).toBe(true)
     expect(lines.at(-1)!.startsWith('╰')).toBe(true)
+    expect(lines[0]!).not.toContain('openclaude v')
+    expect(lines.at(-1)!).toContain('openclaude v')
     expect(lines.every(line => /^[╭│├╰]/.test(line))).toBe(true)
     expect(out).not.toContain('undefined')
     for (const line of lines) {

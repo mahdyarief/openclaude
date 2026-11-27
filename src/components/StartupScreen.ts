@@ -179,19 +179,13 @@ export function printStartupScreen(modelOverride?: string): void {
     modelPlain.length,
     endpointPlain.length,
     statusPlain.length,
+    versionText.length + 3,
   )
   const W = monoW + gap + contentW + 4
   const out: string[] = []
 
-  // Single-cell top rule carrying the version as a quiet title.
-  out.push(
-    border('\u256d') +
-      border('\u2500') +
-      ' ' +
-      paint(versionText, ACCENT) +
-      ' ' +
-      border('\u2500'.repeat(Math.max(0, W - versionText.length - 5)) + '\u256e'),
-  )
+  // Top rule stays quiet; the version rides on the bottom rule.
+  out.push(border('\u256d' + '\u2500'.repeat(W - 2) + '\u256e'))
 
   // Monogram sits in the left column; every detail stays on the right.
   const rows: Array<[string, string, string]> = [
@@ -231,7 +225,15 @@ export function printStartupScreen(modelOverride?: string): void {
       ' ' +
       border('\u2502'),
   )
-  out.push(border('\u2570' + '\u2500'.repeat(W - 2) + '\u256f'))
+  const versionStem = '\u2500'.repeat(monoW + gap + 4)
+  out.push(
+    border('\u2570') +
+      versionStem +
+      ' ' +
+      paint(versionText, ACCENT) +
+      ' ' +
+      border('\u2500'.repeat(Math.max(0, W - versionStem.length - versionText.length - 3)) + '\u256f'),
+  )
 
   process.stdout.write(out.join('\n') + '\n')
 }
